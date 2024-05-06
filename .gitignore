@@ -1,0 +1,6 @@
+.env
+__de*
+./history/
+.history/
+.idea/
+.vscode/
