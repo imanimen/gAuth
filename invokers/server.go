@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"git.dyneemadev.com/micro-services/go-auth/middlewares"
-	"git.dyneemadev.com/micro-services/go-auth/providers"
 	"github.com/gin-gonic/gin"
+	"github.com/imanimen/gAuth/middlewares"
+	"github.com/imanimen/gAuth/providers"
 	"go.uber.org/fx"
 )
 

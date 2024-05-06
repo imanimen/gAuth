@@ -1,7 +1,7 @@
 package models
 
 import (
-	"git.dyneemadev.com/micro-services/go-auth/utils"
+	"github.com/imanimen/gAuth/utils"
 )
 
 type User struct {

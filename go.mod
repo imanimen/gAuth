@@ -1,4 +1,4 @@
-module git.dyneemadev.com/micro-services/go-auth
+module github.com/imanimen/gAuth
 
 go 1.21.4
 

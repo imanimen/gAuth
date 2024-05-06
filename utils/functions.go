@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"git.dyneemadev.com/micro-services/go-auth/services"
+	"github.com/imanimen/gAuth/services"
 )
 
 // getFilePath retrieves the file path for the given file ID from the

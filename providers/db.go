@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"git.dyneemadev.com/micro-services/go-auth/models"
 	"github.com/google/uuid"
+	"github.com/imanimen/gAuth/models"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )

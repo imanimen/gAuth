@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"git.dyneemadev.com/micro-services/go-auth/services"
-	"git.dyneemadev.com/micro-services/go-auth/utils"
+	"github.com/imanimen/gAuth/services"
+	"github.com/imanimen/gAuth/utils"
 
 	// "git.dyneemadev.com/micro-services/go-auth/models"
-	"git.dyneemadev.com/micro-services/go-auth/models"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/imanimen/gAuth/models"
 )
 
 type IApi interface {
