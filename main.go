@@ -1,8 +1,8 @@
 package main
 
 import (
-	"git.dyneemadev.com/micro-services/go-auth/invokers"
-	"git.dyneemadev.com/micro-services/go-auth/providers"
+	"github.com/imanimen/gAuth/invokers"
+	"github.com/imanimen/gAuth/providers"
 	"go.uber.org/fx"
 )
 
