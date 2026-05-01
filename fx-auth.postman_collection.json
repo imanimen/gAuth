@@ -1,0 +1,586 @@
+{
+  "info": {
+    "name": "FX - Authentication API",
+    "description": "Postman collection for FX -  Authentication Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "jwt_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "user_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Public Routes",
+      "item": [
+        {
+          "name": "Get User by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/user/:id",
+              "host": ["{{base_url}}"],
+              "path": ["api", "user", ":id"]
+            },
+            "description": "Get public user information by ID"
+          }
+        },
+        {
+          "name": "Send OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "email",
+                  "value": "user@example.com",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/send",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "send"]
+            },
+            "description": "Send OTP to email address"
+          }
+        },
+        {
+          "name": "Resend OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "email",
+                  "value": "user@example.com",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/resend",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "resend"]
+            },
+            "description": "Resend OTP to email address"
+          }
+        },
+        {
+          "name": "Verify OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "email",
+                  "value": "user@example.com",
+                  "type": "text"
+                },
+                {
+                  "key": "code",
+                  "value": "123456",
+                  "type": "text"
+                },
+                {
+                  "key": "platform",
+                  "value": "web",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/verify",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "verify"]
+            },
+            "description": "Verify OTP and receive JWT token. Platform can be: web, mobile, etc."
+          }
+        },
+        {
+          "name": "Google OAuth Redirect",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/oauth/redirect",
+              "host": ["{{base_url}}"],
+              "path": ["api", "oauth", "redirect"]
+            },
+            "description": "Get Google OAuth redirect URL"
+          }
+        },
+        {
+          "name": "Google OAuth Callback",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "query": [
+              {
+                "key": "code",
+                "value": "authorization_code_here",
+                "type": "string"
+              },
+              {
+                "key": "platform",
+                "value": "web",
+                "type": "string"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/oauth/callback?code=&platform=",
+              "host": ["{{base_url}}"],
+              "path": ["api", "oauth", "callback"],
+              "query": [
+                {
+                  "key": "code",
+                  "value": "",
+                  "type": "string"
+                },
+                {
+                  "key": "platform",
+                  "value": "",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Handle OAuth callback with authorization code"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Protected Routes",
+      "item": [
+        {
+          "name": "Get User by ID (Protected)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/user/:id",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", ":id"]
+            },
+            "description": "Get user by ID (requires authentication)"
+          }
+        },
+        {
+          "name": "Check Token / Get Current User",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/user/check",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "check"]
+            },
+            "description": "Validate token and get current user info"
+          }
+        },
+        {
+          "name": "Get User Platform",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/user/platform",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "platform"]
+            },
+            "description": "Get platform from JWT token"
+          }
+        },
+        {
+          "name": "Get Users (Paginated)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              }
+            ],
+            "query": [
+              {
+                "key": "q",
+                "value": "",
+                "type": "string",
+                "description": "Search query (optional)"
+              },
+              {
+                "key": "page",
+                "value": "1",
+                "type": "string",
+                "description": "Page number"
+              },
+              {
+                "key": "pageSize",
+                "value": "10",
+                "type": "string",
+                "description": "Items per page"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/user/users?q=&page=1&pageSize=10",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "users"],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "",
+                  "type": "string"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "type": "string"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "10",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Get paginated list of users"
+          }
+        },
+        {
+          "name": "Get All Users with Search",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              }
+            ],
+            "query": [
+              {
+                "key": "q",
+                "value": "",
+                "type": "string",
+                "description": "Search query (optional)"
+              },
+              {
+                "key": "limit",
+                "value": "50",
+                "type": "string",
+                "description": "Maximum results"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/user/all-users?q=&limit=50",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "all-users"],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "",
+                  "type": "string"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Get all users with optional search"
+          }
+        },
+        {
+          "name": "Get Selected Users",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ids\": [\"user-id-1\", \"user-id-2\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/user/select",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "select"]
+            },
+            "description": "Get specific users by their IDs"
+          }
+        },
+        {
+          "name": "Update Username",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "username",
+                  "value": "newusername",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/user/update-username",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "update-username"]
+            },
+            "description": "Update user username"
+          }
+        },
+        {
+          "name": "Validate Username",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "username",
+                  "value": "desiredusername",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/user/validate-username",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "validate-username"]
+            },
+            "description": "Check if username is available"
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"keys\": [\n    {\n      \"key\": \"first_name\",\n      \"value\": \"John\"\n    },\n    {\n      \"key\": \"last_name\",\n      \"value\": \"Doe\"\n    },\n    {\n      \"key\": \"birthdate\",\n      \"value\": \"1990/01/01\"\n    },\n    {\n      \"key\": \"about\",\n      \"value\": \"About me text\"\n    },\n    {\n      \"key\": \"gender\",\n      \"value\": \"male\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/user/update",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "update"]
+            },
+            "description": "Update profile fields. Supported keys: username, display_name, first_name, last_name, birthdate, age, about, gender, avatar, cover, favorite_categories"
+          }
+        },
+        {
+          "name": "Remove Profile Fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"keys\": [\n    {\n      \"key\": \"first_name\"\n    },\n    {\n      \"key\": \"last_name\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/user/remove-profile",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "remove-profile"]
+            },
+            "description": "Remove specific profile fields"
+          }
+        },
+        {
+          "name": "Add Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "category_id",
+                  "value": "category-id-here",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/user/add-category",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "add-category"]
+            },
+            "description": "Add favorite category to user profile"
+          }
+        },
+        {
+          "name": "Delete Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "category_id",
+                  "value": "category-id-here",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/user/delete-category",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "user", "delete-category"]
+            },
+            "description": "Remove favorite category from user profile"
+          }
+        }
+      ]
+    }
+  ]
+}
