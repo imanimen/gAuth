@@ -14,7 +14,7 @@ import (
 // TODO: cache for development
 var filePathCache = make(map[string]string)
 
-// getFilePath retrieves the file path for the given file ID from the
+// GetFilePath getFilePath retrieves the file path for the given file ID from the
 // file service API. It caches the result to avoid unnecessary API calls.
 func GetFilePath(fileId string) (string, error) {
 
