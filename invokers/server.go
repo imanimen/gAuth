@@ -15,7 +15,12 @@ func ApiServer(lc fx.Lifecycle, api providers.IApi) *gin.Engine {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			InitRoutes(r, api)
-			go r.Run()
+			go func() {
+				err := r.Run()
+				if err != nil {
+					panic(err)
+				}
+			}()
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
