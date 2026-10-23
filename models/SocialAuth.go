@@ -5,5 +5,5 @@ type SocialAuth struct {
 	UserId         string `json:"user_id"`
 	Provider       string `json:"provider"`
 	ProviderUserID string `json:"provider_user_id"`
-	CreatedAt      string `json:"string"`
+	CreatedAt      string `json:"created_at"`
 }

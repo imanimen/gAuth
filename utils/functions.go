@@ -2,63 +2,78 @@ package utils
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
+	"sync"
 	"time"
 
 	"github.com/imanimen/gAuth/services"
 )
 
-// getFilePath retrieves the file path for the given file ID from the
-// file service API. It caches the result to avoid unnecessary API calls.
-// TODO: cache for development
-var filePathCache = make(map[string]string)
+// filePathCache stores resolved file service URLs. It is capped to keep the
+// memory footprint bounded; when the cap is reached the whole cache is
+// dropped which is acceptable for a short lived service.
+const filePathCacheLimit = 4096
 
-// GetFilePath getFilePath retrieves the file path for the given file ID from the
-// file service API. It caches the result to avoid unnecessary API calls.
-func GetFilePath(fileId string) (string, error) {
+var (
+	filePathCacheMu sync.RWMutex
+	filePathCache   = make(map[string]string)
+)
 
-	// Check if the file path is already cached
-	if cachedPath, exists := filePathCache[fileId]; exists {
-		return cachedPath, nil
+// GetFilePath retrieves the public URL for the given file ID from the file
+// service API and caches the result.
+func GetFilePath(fileID string) (string, error) {
+	if fileID == "" {
+		return "", nil
 	}
 
-	payloadData := map[string]string{
-		"file_id": fileId,
+	filePathCacheMu.RLock()
+	url, ok := filePathCache[fileID]
+	filePathCacheMu.RUnlock()
+	if ok {
+		return url, nil
 	}
 
-	payloadBytes, err := json.Marshal(payloadData)
+	payload, err := json.Marshal(map[string]string{"file_id": fileID})
 	if err != nil {
-		fmt.Println("Error marshaling payload:", err)
 		return "", err
 	}
 
-	apiCall, err := services.Call(os.Getenv("FILE_SERVICE_URL")+"/find", "POST", payloadBytes)
+	apiCall, err := services.Call(services.GetEnv("FILE_SERVICE_URL", "")+"/find", "POST", payload)
 	if err != nil {
-		fmt.Println("Error calling file service:", err)
 		return "", err
 	}
 
 	filePath, ok := apiCall["file_path"].(string)
-	if !ok {
-		fmt.Println("File path not found in response")
-		return "", err
+	if !ok || filePath == "" {
+		return "", errors.New("file path not found in response")
 	}
 
-	filePathCache[fileId] = os.Getenv("CDN_URL") + "/" + filePath
+	cdnURL := services.GetEnv("CDN_URL", "")
+	if cdnURL != "" {
+		filePath = fmt.Sprintf("%s/%s", cdnURL, filePath)
+	}
 
-	return filePathCache[fileId], nil
+	filePathCacheMu.Lock()
+	if len(filePathCache) >= filePathCacheLimit {
+		filePathCache = make(map[string]string)
+	}
+	filePathCache[fileID] = filePath
+	filePathCacheMu.Unlock()
+
+	return filePath, nil
 }
 
-// CalculateAge calculates the age of a person given their birth date.
-// It takes a time.Time representing the birth date and returns the
-// person's age as an integer.
+// CalculateAge returns the age in full years reached by a person with the
+// given birth date as of today.
 func CalculateAge(birthDate time.Time) int {
 	currentDate := time.Now()
-	age := currentDate.Year() - birthDate.Year()
 
-	// Check if the birthdate has occurred this year already
-	if currentDate.YearDay() < birthDate.YearDay() {
+	age := currentDate.Year() - birthDate.Year()
+	beforeBirthday :=
+		currentDate.Month() < birthDate.Month() ||
+			(currentDate.Month() == birthDate.Month() && currentDate.Day() < birthDate.Day())
+	if beforeBirthday {
 		age--
 	}
 

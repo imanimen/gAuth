@@ -1,44 +1,39 @@
 package models
 
 import (
-
-	"math/rand"
+	"crypto/rand"
+	"math/big"
 )
 
 type OTP struct {
 	ID           uint   `gorm:"primaryKey,autoIncrement" json:"id"`
-	UserID       string `json:"userId"`
+	UserID       string `json:"user_id"`
 	Email        string `json:"email"`
 	PhoneNumber  string `json:"phone_number"`
-	Code         string `json:"code"` // Change type to string for OTP code
+	Code         string `json:"code"`
 	CodeExpireAt string `json:"code_expire_at"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 }
 
+// GenerateOTP returns a cryptographically random six digit code. Leading
+// digits avoid zero only because the charset starts at 1.
 func (o *OTP) GenerateOTP() string {
-	length := 6
-	characters := "123456789"
+	const (
+		length     = 6
+		charset    = "123456789"
+		charsetLen = int64(len(charset))
+	)
 
-	randomChars := make([]byte, length)
+	code := make([]byte, length)
 	for i := 0; i < length; i++ {
-		randomChars[i] = characters[rand.Intn(len(characters))]
+		n, err := rand.Int(rand.Reader, big.NewInt(charsetLen))
+		if err != nil {
+			// crypto/rand failing means the system entropy source is
+			// broken; panic is safer than returning a predictable code.
+			panic("crypto/rand failed: " + err.Error())
+		}
+		code[i] = charset[n.Int64()]
 	}
-
-	code := string(randomChars) // Convert []byte to string for OTP code
-	return code
+	return string(code)
 }
-
-// func (c *OTP) CreateOTP(id, email string) string {
-// 	expirationTime := time.Now().Add(time.Minute * 5).Format(time.RFC3339)
-// 	otp := &OTP{
-// 		UserID:       id,
-// 		Email:        email,
-// 		PhoneNumber:  "", // Add phone number if needed
-// 		Code:         c.GenerateOTP(),
-// 		CodeExpireAt: expirationTime,
-// 		CreatedAt:    time.Now().Format(time.RFC3339),
-// 		UpdatedAt:    time.Now().Format(time.RFC3339),
-// 	}
-// 	return otp.Code
-// }

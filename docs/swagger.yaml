@@ -1,0 +1,712 @@
+basePath: /
+definitions:
+  models.User:
+    properties:
+      about:
+        type: string
+      age:
+        type: string
+      avatar:
+        description: |-
+          Appendable fields resolved from the profiles table. The `gorm:"-"`
+          tag excludes them from migration.
+        type: string
+      birthdate:
+        type: string
+      cover:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      email_verified_at:
+        type: string
+      favorite_categories:
+        type: string
+      first_name:
+        type: string
+      gender:
+        type: string
+      id:
+        type: string
+      last_name:
+        type: string
+      phone_number:
+        type: string
+      step:
+        type: integer
+      updated_at:
+        type: string
+      username:
+        type: string
+    type: object
+  providers.AuthData:
+    properties:
+      step:
+        type: integer
+      token:
+        type: string
+      user_id:
+        type: string
+    type: object
+  providers.AvailabilityData:
+    properties:
+      available:
+        type: boolean
+    type: object
+  providers.CategoryRequest:
+    properties:
+      category_id:
+        type: string
+    required:
+    - category_id
+    type: object
+  providers.ErrorResponse:
+    properties:
+      error:
+        type: string
+      version:
+        type: string
+    type: object
+  providers.KeyItem:
+    properties:
+      key:
+        type: string
+      value:
+        type: string
+    required:
+    - key
+    type: object
+  providers.MessageData:
+    properties:
+      message:
+        type: string
+    type: object
+  providers.OTPData:
+    properties:
+      code:
+        type: string
+      expire_at:
+        type: string
+    type: object
+  providers.PlatformData:
+    properties:
+      platform:
+        type: string
+    type: object
+  providers.ProfileRemoveRequest:
+    properties:
+      keys:
+        items:
+          $ref: '#/definitions/providers.KeyItem'
+        type: array
+    required:
+    - keys
+    type: object
+  providers.ProfileUpdateRequest:
+    properties:
+      keys:
+        items:
+          $ref: '#/definitions/providers.KeyItem'
+        type: array
+    required:
+    - keys
+    type: object
+  providers.RedirectData:
+    properties:
+      redirect:
+        type: string
+    type: object
+  providers.ResponseAuth:
+    properties:
+      data:
+        $ref: '#/definitions/providers.AuthData'
+      version:
+        type: string
+    type: object
+  providers.ResponseAvailability:
+    properties:
+      data:
+        $ref: '#/definitions/providers.AvailabilityData'
+      version:
+        type: string
+    type: object
+  providers.ResponseMessage:
+    properties:
+      data:
+        $ref: '#/definitions/providers.MessageData'
+      version:
+        type: string
+    type: object
+  providers.ResponseOTP:
+    properties:
+      data:
+        $ref: '#/definitions/providers.OTPData'
+      version:
+        type: string
+    type: object
+  providers.ResponsePlatform:
+    properties:
+      data:
+        $ref: '#/definitions/providers.PlatformData'
+      version:
+        type: string
+    type: object
+  providers.ResponseRedirect:
+    properties:
+      data:
+        $ref: '#/definitions/providers.RedirectData'
+      version:
+        type: string
+    type: object
+  providers.ResponseUser:
+    properties:
+      data:
+        $ref: '#/definitions/models.User'
+      version:
+        type: string
+    type: object
+  providers.ResponseUsers:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/models.User'
+        type: array
+      version:
+        type: string
+    type: object
+  providers.SelectUsersRequest:
+    properties:
+      ids:
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - ids
+    type: object
+  providers.SendOtpRequest:
+    properties:
+      email:
+        type: string
+    required:
+    - email
+    type: object
+  providers.UpdateUsernameRequest:
+    properties:
+      username:
+        type: string
+    required:
+    - username
+    type: object
+  providers.VerifyOtpRequest:
+    properties:
+      code:
+        type: string
+      email:
+        type: string
+      platform:
+        type: string
+    required:
+    - code
+    - email
+    - platform
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: 'gAuth is a production authentication microservice: email OTP flows,
+    Google OAuth social login and user profile management.'
+  title: gAuth API
+  version: "1.0"
+paths:
+  /api/auth/resend:
+    post:
+      consumes:
+      - application/json
+      description: Regenerates and resends the OTP code for the given email address.
+      parameters:
+      - description: Email address
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.SendOtpRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseOTP'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      summary: Resend OTP code
+      tags:
+      - auth
+  /api/auth/send:
+    post:
+      consumes:
+      - application/json
+      description: Generates an OTP code for the given email address and sends it
+        via the notification service.
+      parameters:
+      - description: Email address
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.SendOtpRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseOTP'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      summary: Send OTP code
+      tags:
+      - auth
+  /api/auth/verify:
+    post:
+      consumes:
+      - application/json
+      description: Verifies the OTP code and returns an access token for the resulting
+        user session.
+      parameters:
+      - description: Email, code and platform
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.VerifyOtpRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseAuth'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      summary: Verify OTP code
+      tags:
+      - auth
+  /api/oauth/callback:
+    get:
+      description: Exchanges the authorization code, links the social account to the
+        user, seeds the profile and returns an access token.
+      parameters:
+      - description: Authorization code
+        in: query
+        name: code
+        required: true
+        type: string
+      - description: State returned by /api/oauth/redirect
+        in: query
+        name: state
+        required: true
+        type: string
+      - description: Target platform claim
+        in: query
+        name: platform
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseAuth'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      summary: Google OAuth callback
+      tags:
+      - oauth
+  /api/oauth/redirect:
+    get:
+      description: Returns the provider authorization URL for the social login flow.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseRedirect'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      summary: Start Google OAuth flow
+      tags:
+      - oauth
+  /auth/user/{id}:
+    get:
+      description: Returns the public profile of the user with the given ID.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseUser'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get user by ID
+      tags:
+      - users
+  /auth/user/add-category:
+    post:
+      consumes:
+      - application/json
+      description: Appends a category ID to the authenticated user's favorite categories.
+      parameters:
+      - description: Category ID
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.CategoryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseMessage'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Add favorite category
+      tags:
+      - users
+  /auth/user/all-users:
+    get:
+      description: Lists all users other than the requesting one, filtered by a search
+        query.
+      parameters:
+      - description: Search query
+        in: query
+        name: q
+        type: string
+      - description: Max results
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseUsers'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List users
+      tags:
+      - users
+  /auth/user/check:
+    get:
+      description: Returns the authenticated user the current access token belongs
+        to.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseUser'
+      security:
+      - BearerAuth: []
+      summary: Check session
+      tags:
+      - users
+  /auth/user/delete-category:
+    post:
+      consumes:
+      - application/json
+      description: Removes a category ID from the authenticated user's favorite categories.
+      parameters:
+      - description: Category ID
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.CategoryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseMessage'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete favorite category
+      tags:
+      - users
+  /auth/user/platform:
+    get:
+      description: Returns the platform claim of the current access token.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponsePlatform'
+      security:
+      - BearerAuth: []
+      summary: Get token platform
+      tags:
+      - auth
+  /auth/user/remove-profile:
+    post:
+      consumes:
+      - application/json
+      description: Deletes the given profile keys of the authenticated user. Deleting
+        missing keys succeeds silently.
+      parameters:
+      - description: Profile keys to remove
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.ProfileRemoveRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseMessage'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Remove profile keys
+      tags:
+      - users
+  /auth/user/select:
+    post:
+      consumes:
+      - application/json
+      description: Returns the users matching the given ID list, excluding the requesting
+        user.
+      parameters:
+      - description: User ID list
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.SelectUsersRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseUsers'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get selected users
+      tags:
+      - users
+  /auth/user/update:
+    post:
+      consumes:
+      - application/json
+      description: Creates or updates profile key/value pairs for the authenticated
+        user. A `birthdate` value also refreshes the computed `age`.
+      parameters:
+      - description: Profile keys and values
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.ProfileUpdateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseMessage'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update profile
+      tags:
+      - users
+  /auth/user/update-username:
+    post:
+      consumes:
+      - application/json
+      description: Sets the username of the authenticated user.
+      parameters:
+      - description: New username
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.UpdateUsernameRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/providers.ResponseUser'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update username
+      tags:
+      - users
+  /auth/user/users:
+    get:
+      description: Lists users other than the requesting one, paginated and filtered
+        by a search query.
+      parameters:
+      - description: Search query
+        in: query
+        name: q
+        type: string
+      - description: Page number (1 based)
+        in: query
+        name: page
+        required: true
+        type: integer
+      - description: Page size
+        in: query
+        name: pageSize
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseUsers'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List users with pagination
+      tags:
+      - users
+  /auth/user/validate-username:
+    post:
+      consumes:
+      - application/json
+      description: Checks that the username is free to pick for the authenticated
+        user.
+      parameters:
+      - description: Username to validate
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/providers.UpdateUsernameRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ResponseAvailability'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/providers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Validate username
+      tags:
+      - users
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

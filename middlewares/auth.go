@@ -1,52 +1,59 @@
 package middlewares
 
 import (
-	"os"
-	"strings"
-
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/imanimen/gAuth/models"
+	"github.com/imanimen/gAuth/services"
 )
 
-func AuthMiddleware(getUserByID func(id string) (*models.User, error)) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tokenString := c.Request.Header.Get("authorization")
-		if strings.HasPrefix(tokenString, "Bearer ") {
-			tokenString = strings.TrimPrefix(tokenString, "Bearer ")
-		}
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			return []byte(os.Getenv("SECRET")), nil
-		})
-		if err != nil {
-			respondWithError(c, 401, "authorization header required "+err.Error())
-			return
-		}
+// Context keys used to propagate the authenticated user downstream.
+const (
+	CtxUserKey     = "auth_user"
+	CtxPlatformKey = "auth_platform"
+)
 
-		if !token.Valid {
-			respondWithError(c, 401, "invalid token")
-			return
-		}
+// GetUserByIDFunc is the callback used by the middleware to load the user
+// identified by a token.
+type GetUserByIDFunc func(id string) (*models.User, error)
 
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			respondWithError(c, 401, "invalid token")
-		}
-
-		if claims, ok := token.Claims.(jwt.MapClaims); ok {
-
-			user, err := getUserByID(claims["user_id"].(string))
-			if err != nil {
-				respondWithError(c, 401, "invalid token")
-				return
-			}
-			c.AddParam("__user_id", user.ID)
-			c.Next()
-		} else {
-			respondWithError(c, 401, "invalid token")
+// CurrentUser returns the user attached to the request by AuthMiddleware.
+func CurrentUser(c *gin.Context) (models.User, error) {
+	if value, ok := c.Get(CtxUserKey); ok {
+		if user, ok := value.(models.User); ok {
+			return user, nil
 		}
 	}
+	return models.User{}, services.ErrInvalidToken
 }
 
-func respondWithError(c *gin.Context, code int, message interface{}) {
-	c.AbortWithStatusJSON(code, gin.H{"error": message})
+// CurrentPlatform returns the platform claim attached by AuthMiddleware.
+func CurrentPlatform(c *gin.Context) string {
+	if value, ok := c.Get(CtxPlatformKey); ok {
+		if platform, ok := value.(string); ok {
+			return platform
+		}
+	}
+	return ""
+}
+
+// AuthMiddleware gates routes on a valid Bearer access token. On success it
+// stores the user and platform claim on the request context for handlers.
+func AuthMiddleware(getUserByID GetUserByIDFunc, tokenManager services.TokenManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, err := tokenManager.Parse(services.StripBearer(c.Request.Header.Get("Authorization")))
+		if err != nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": err.Error()})
+			return
+		}
+
+		user, err := getUserByID(claims.UserID)
+		if err != nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": "invalid token"})
+			return
+		}
+
+		c.Set(CtxUserKey, *user)
+		c.Set(CtxPlatformKey, claims.Platform)
+		c.Next()
+	}
 }
