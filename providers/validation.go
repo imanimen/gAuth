@@ -5,8 +5,7 @@ import (
 	"regexp"
 )
 
-
-
+// IValidations offers request payload validation helpers.
 type IValidations interface {
 	IsValidEmail(string) bool
 	IsValidMobile(string) bool
@@ -14,54 +13,40 @@ type IValidations interface {
 }
 
 type Validations struct {
-	Email 			string `form:"email" binding:"required,email"`
-	PhoneNumber  	string `form:"mobile" binding:"required"`
+	usernamePattern *regexp.Regexp
+	mobilePattern   *regexp.Regexp
 }
 
-func (v Validations) IsValidEmail(email string) bool {
-	
-	if email == "" {
-		return false
+// NewValidations builds the default validation set.
+func NewValidations() IValidations {
+	return &Validations{
+		usernamePattern: regexp.MustCompile("^[A-Za-z][A-Za-z0-9_.]+$"),
+		// Iranian mobile numbers.
+		mobilePattern: regexp.MustCompile(`^(\+98|0)?9\d{9}$`),
 	}
+}
 
+// IsValidEmail reports whether the address satisfies the simplest standard
+// RFC 5322 shape.
+func (v Validations) IsValidEmail(email string) bool {
 	if len(email) < 3 {
 		return false
 	}
-
 	_, err := mail.ParseAddress(email)
-	if err != nil {
-		return false
-	}
-
-	return true
+	return err == nil
 }
 
+// IsValidUsername reports whether the username is 4..16 chars long, starts
+// with a letter and contains only letters, numbers, underscores and dots.
 func (v Validations) IsValidUsername(username string) bool {
-	if username == "" {
+	if len(username) < 4 || len(username) > 16 {
 		return false
 	}
-
-	if len(username) < 4 {
-		return false
-	}
-
-	if len(username) > 16 {
-		return false
-	}
-
-	match, _ := regexp.MatchString("^[A-Za-z][A-Za-z0-9_.]+$", username)
-	return match
+	return v.usernamePattern.MatchString(username)
 }
 
+// IsValidMobile reports whether the value matches the supported mobile
+// number format.
 func (v Validations) IsValidMobile(phoneNumber string) bool {
-	    //  for Iranian phone numbers
-		iranRegex := `^(\+98|0)?9\d{9}$`
-		re := regexp.MustCompile(iranRegex)
-		
-		return re.MatchString(phoneNumber)
-}
-
-
-func NewValidations() IValidations {
-	return &Validations{}
+	return v.mobilePattern.MatchString(phoneNumber)
 }

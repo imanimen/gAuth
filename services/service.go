@@ -4,89 +4,109 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
+	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
+	"os"
+	"time"
 )
 
-// Call makes an HTTP request to the specified URL using the provided method and payload.
-// It returns the response as a map[string]interface{} and any error that occurred during the request.
-// The request is made with a JSON content type.
+const defaultHTTPTimeout = 15 * time.Second
+
+// Call makes an HTTP request to the specified URL using the provided method
+// and payload. It returns the decoded JSON response as a
+// map[string]interface{} and any error that occurred during the request.
+// Non 2xx status codes are treated as errors.
 func Call(url string, method string, payload []byte) (map[string]interface{}, error) {
-	client := &http.Client{}
-	req, err := http.NewRequest(method, url, bytes.NewBuffer(payload))
+	if url == "" {
+		return nil, errors.New("empty request url")
+	}
+
+	client := &http.Client{Timeout: defaultHTTPTimeout}
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewBuffer(payload)
+	}
+
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, err
 	}
-
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			log.Fatal("Error in request: ", err.Error())
-		}
-	}(resp.Body)
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
-	var result map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&result)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading response body: %w", err)
 	}
 
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
+	}
+
+	var result map[string]interface{}
+	if len(data) == 0 {
+		return result, nil
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
 	return result, nil
 }
 
-// oAuth implementation
-var (
-	GoogleOAuthConfig = &oauth2.Config{
-		ClientID:     "186417833863-scjsm0d18jt1s9jgvsntq8sgkm52v1s6.apps.googleusercontent.com",
-		ClientSecret: "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",
-		Endpoint:     google.Endpoint,
-		RedirectURL:  "http://localhost:8080/auth/callback",
-		Scopes: []string{
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
-			"https://www.googleapis.com/auth/photoslibrary.readonly",
-		},
+// DispatchOTPNotification sends an OTP email request to the notification
+// service in the background. Failures are logged and do not affect the
+// caller. It is a no-op when notifyURL is empty.
+func DispatchOTPNotification(notifyURL, code, email string) {
+	if notifyURL == "" {
+		return
 	}
-	OauthStateString = "random"
-)
+	payload := []byte(fmt.Sprintf(`{
+		"type": ["email"],
+		"payload": %q,
+		"destination": %q,
+		"mail_type": "otp"
+	}`, code, email))
 
-// OAuthGoogleUserInfo represents the user information returned from the Google OAuth2 API.
-// It contains the user's ID, email, name, given name, family name, profile picture, and locale.
-type OAuthGoogleUserInfo struct {
-	ID         string `json:"sub"`
-	Email      string `json:"email"`
-	Name       string `json:"name"`
-	GivenName  string `json:"given_name"`
-	FamilyName string `json:"family_name"`
-	Picture    string `json:"picture"`
-	Locale     string `json:"locale"`
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultHTTPTimeout)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, notifyURL, bytes.NewBuffer(payload))
+		if err != nil {
+			fmt.Println("otp notification: building request failed:", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := (&http.Client{Timeout: defaultHTTPTimeout}).Do(req)
+		if err != nil {
+			fmt.Println("otp notification: dispatch failed:", err)
+			return
+		}
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			fmt.Printf("otp notification: unexpected status %d from %s\n", resp.StatusCode, notifyURL)
+		}
+	}()
 }
 
-// GetUserInfo retrieves the user's information from the Google OAuth2 API using the provided access token.
-// It returns a struct containing the user's ID, email, name, given name, family name, profile picture, and locale.
-// If an error occurs during the API request or response decoding, the function will return an error.
-func GetUserInfo(token *oauth2.Token) (*OAuthGoogleUserInfo, error) {
-	client := GoogleOAuthConfig.Client(context.Background(), token)
-
-	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
-	if err != nil {
-		return nil, err
+// GetEnv returns the value of the given environment variable or the fallback
+// when it is unset. It is a small helper for optional service locations that
+// are not part of the typed configuration.
+func GetEnv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
-	defer resp.Body.Close()
-
-	var userInfo OAuthGoogleUserInfo
-	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		return nil, err
-	}
-
-	return &userInfo, nil
+	return fallback
 }

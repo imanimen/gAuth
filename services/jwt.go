@@ -1,65 +1,89 @@
 package services
 
 import (
-	"github.com/golang-jwt/jwt/v5"
-	"os"
+	"errors"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// GenerateJWT generates a JWT token with the provided user ID and additional data.
-// The token is signed using a secret key stored in the environment variable "SECRET".
-// The token is valid for 10 minutes from the time of generation.
-func GenerateJWT(userId string, data map[string]string) (string, error) {
-	// Get the secret key from environment variable
-	secret := []byte(os.Getenv("SECRET"))
-
-	// Create a new JWT token
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"user_id": userId,
-		// Assuming 'data' contains key-value pairs for additional data
-		"data": data,
-		"exp":  time.Now().Local().Add(time.Minute * time.Duration(10)).Unix(),
-		"nbf":  time.Now().Unix(),
-	})
-
-	// Sign the token with the secret key
-	tokenString, err := jwtToken.SignedString(secret)
-	if err != nil {
-		return "", err
-	}
-
-	return tokenString, nil
+// CustomClaims is the payload encoded in every access token issued by gAuth.
+type CustomClaims struct {
+	UserID   string            `json:"user_id"`
+	Data     map[string]string `json:"data,omitempty"`
+	Platform string            `json:"platform,omitempty"`
+	jwt.RegisteredClaims
 }
 
-// GetValueFromToken parses the provided JWT token string, verifies its signature using the
-// "SECRET" environment variable, and extracts the value of the specified key from the
-// "data" claim. If the token is invalid or the desired key is not found, an error is
-// returned.
-func GetValueFromToken(tokenString string, desiredKey string) (string, error) {
-	// Parse the token
+// TokenManager issues and verifies access tokens.
+type TokenManager interface {
+	Generate(userID string, platform string, data map[string]string) (string, error)
+	Parse(tokenString string) (*CustomClaims, error)
+}
 
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		return []byte(os.Getenv("SECRET")), nil
+type tokenManager struct {
+	secret []byte
+	ttl    time.Duration
+}
+
+// NewJWTManager builds a TokenManager that signs HS256 tokens with the given
+// secret and makes them valid for the given ttl.
+func NewJWTManager(secret string, ttl time.Duration) TokenManager {
+	return &tokenManager{secret: []byte(secret), ttl: ttl}
+}
+
+func (m *tokenManager) Generate(userID string, platform string, data map[string]string) (string, error) {
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, CustomClaims{
+		UserID:   userID,
+		Data:     data,
+		Platform: platform,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(now.Add(m.ttl)),
+			NotBefore: jwt.NewNumericDate(now),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
 	})
+	return token.SignedString(m.secret)
+}
 
-	if err != nil {
-		return "", err
+func (m *tokenManager) Parse(tokenString string) (*CustomClaims, error) {
+	if tokenString == "" {
+		return nil, ErrTokenRequired
 	}
-
-	// Check if the token is valid
-	if !token.Valid {
-		return "", jwt.ErrSignatureInvalid
-	}
-
-	if claims, ok := token.Claims.(jwt.MapClaims); ok {
-		// Check if "data" claim exists and is a map[string]interface{}
-		if dataClaim, exists := claims["data"].(map[string]interface{}); exists {
-			if value, valueExists := dataClaim[desiredKey].(string); valueExists {
-				return value, nil
+	claims := &CustomClaims{}
+	token, err := jwt.ParseWithClaims(
+		tokenString,
+		claims,
+		func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, ErrInvalidSigningMethod
 			}
-		}
+			return m.secret, nil
+		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+	)
+	if err != nil {
+		return nil, err
 	}
-
-	//return "", jwt.ValidationError{Inner: err, Errors: jwt.ValidationErrorClaimsInvalid}
-	return "", jwt.ErrTokenInvalidClaims
+	if !token.Valid {
+		return nil, ErrInvalidToken
+	}
+	return claims, nil
 }
+
+// StripBearer removes an optional "Bearer " prefix from an authorization
+// header value.
+func StripBearer(headerValue string) string {
+	const prefix = "Bearer "
+	if len(headerValue) > len(prefix) && headerValue[:len(prefix)] == prefix {
+		return headerValue[len(prefix):]
+	}
+	return headerValue
+}
+
+var (
+	ErrTokenRequired        = errors.New("authorization token is required")
+	ErrInvalidToken         = errors.New("invalid token")
+	ErrInvalidSigningMethod = errors.New("invalid token signing method")
+)

@@ -8,657 +8,620 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/imanimen/gAuth/models"
+	"github.com/imanimen/gAuth/utils"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
+// Domain errors surfaced by the database layer.
+var (
+	ErrUserNotFound    = errors.New("user not found")
+	ErrProfileNotFound = errors.New("profile not found")
+	ErrOTPNotFound     = errors.New("OTP record not found")
+	ErrOTPExpired      = errors.New("OTP code expired")
+	ErrUsernameTaken   = errors.New("username already exists")
+	ErrCategoryExists  = errors.New("category already in the list")
+	ErrCategoryMissing = errors.New("category not found in the list")
+)
+
+// IDatabase is the database access contract used by the API handlers.
 type IDatabase interface {
-	getUserByID(id string) (*models.User, error)
-	sendOTP(email string) (string, string, error)
-	verifyCode(email, code string) (*models.User, error)
-	updateUserRegistrationStep(userId string, step int) (int, error)
-	updateUsername(user *models.User, username string) (*models.User, error)
-	updateProfile(userId, itemKey, itemValue string) error
-	isUsernameUnique(username, userID string) error
-	deleteProfile(userId, itemKey string) error
-	addCategory(userId, categoryId string) error
-	deleteCategory(userId, categoryId string) error
-	allUsers(userId string, q string, limit int) []models.User
-	getUsersByIds(userId string, userIds []string) ([]models.User, error)
+	GetUserByID(id string) (*models.User, error)
+	SendOTP(email string) (code string, expireAt string, err error)
+	VerifyCode(email string, code string) (*models.User, error)
+	UpdateUserRegistrationStep(userId string, step int) (int, error)
+	UpdateUsername(user *models.User, username string) (*models.User, error)
+	UpdateProfile(userId string, itemKey string, itemValue string) error
+	IsUsernameUnique(username string, userID string) error
+	DeleteProfile(userId string, itemKey string) error
+	AddCategory(userId string, categoryId string) error
+	DeleteCategory(userId string, categoryId string) error
+	AllUsers(userId string, q string, limit int) []models.User
+	GetUsersByIds(userId string, userIds []string) ([]models.User, error)
 	FetchProfileByUserID(userId string) map[string]string
-	allUsersWithPagination(userId string, q string, page, pageSize int) []models.User
+	AllUsersWithPagination(userId string, q string, page int, pageSize int) []models.User
 	OauthGetOrCreateUser(email string, username string) (*models.User, error)
-	CreateSocialAuthClient(provider, userId, providerUserId string) error
-	CountData(model interface{}) int64
+	CreateSocialAuthClient(provider string, userId string, providerUserId string) error
 }
 
+// Database is the Gorm implementation of IDatabase.
 type Database struct {
 	Connection *gorm.DB
-	Config     IConfig
 }
 
-// NewDatabase creates a new Database instance with a connection to the
-// database using the provided config. It runs migrations for the User,
-// OTP and Profile models.
-func NewDatabase(config IConfig) IDatabase {
-	dsn := config.Get("dsn")
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+// NewDB opens the production database connection described by the config.
+func NewDB(config IConfig) (*gorm.DB, error) {
+	db, err := gorm.Open(mysql.Open(config.DSN()), &gorm.Config{})
 	if err != nil {
-		panic("Error connecting db")
+		return nil, fmt.Errorf("connecting database: %w", err)
 	}
-
-	db.AutoMigrate(&models.User{})
-	db.AutoMigrate(&models.OTP{})
-	db.AutoMigrate(&models.Profile{})
-	db.AutoMigrate(&models.SocialAuth{})
-
-	return &Database{
-		Connection: db,
-		Config:     config,
-	}
+	return db, nil
 }
 
-func (database *Database) CountData(model interface{}) int64 {
-	var totalDataCount int64
-	database.Connection.Model(model).Count(&totalDataCount)
-	return totalDataCount
+// NewDatabase builds the IDatabase implementation on top of an existing
+// connection and runs the model migrations.
+func NewDatabase(db *gorm.DB) IDatabase {
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.OTP{},
+		&models.Profile{},
+		&models.SocialAuth{},
+	); err != nil {
+		panic("database migration failed: " + err.Error())
+	}
+	return &Database{Connection: db}
 }
 
-// getUserByID retrieves a user from the database by ID.
-// It returns a pointer to a User model and an error.
-// The ID is passed in as a string.
-// It first queries the database by ID and returns an error if not found.
-// It then populates the Avatar and Cover fields by fetching the user's profile.
-// Returns the User or an error.
-func (database *Database) getUserByID(id string) (*models.User, error) {
+// NewTestDatabase builds the IDatabase implementation on the given connection
+// without running migrations, which the test harness manages manually.
+func NewTestDatabase(db *gorm.DB) IDatabase {
+	return &Database{Connection: db}
+}
+
+// GetUserByID retrieves a user from the database by ID and enriches it with
+// the user's profile data.
+func (d *Database) GetUserByID(id string) (*models.User, error) {
 	var user models.User
-	err := database.Connection.Where("id = ?", id).First(&user).Error
+	err := d.Connection.Where("id = ?", id).First(&user).Error
 	if err != nil {
-		if errors.Is(gorm.ErrRecordNotFound, err) {
-			return nil, fmt.Errorf("record not found")
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrUserNotFound
 		}
 		return nil, err
 	}
-	user.Gender = database.FetchProfileByUserIDAndKey(user.ID, models.KeyGender)
-	user.Avatar = user.GetAvatar(database.FetchProfileByUserIDAndKey(user.ID, models.KeyAvatar))
-	user.Cover = user.GetCover(database.FetchProfileByUserIDAndKey(user.ID, models.KeyCover))
-	user.DisplayName = database.FetchProfileByUserIDAndKey(user.ID, models.KeyDisplayName)
-	user.About = database.FetchProfileByUserIDAndKey(user.ID, models.KeyAbout)
-	user.FavoriteCategories = database.FetchProfileByUserIDAndKey(user.ID, models.KeyFavoriteCategories)
-	user.Birthdate = database.FetchProfileByUserIDAndKey(user.ID, models.KeyBirthday)
-	user.Age = database.FetchProfileByUserIDAndKey(user.ID, models.KeyAge)
-	user.FirstName = database.FetchProfileByUserIDAndKey(user.ID, models.KeyFirstName)
-	user.LastName = database.FetchProfileByUserIDAndKey(user.ID, models.KeyLastName)
-
+	profiles := d.fetchProfilesForUserIDs([]string{user.ID})
+	d.applyProfiles(&user, profiles[user.ID])
 	return &user, nil
 }
 
-// sendOTP generates a new OTP code for the given email address.
-// It first checks if a user exists for that email. If not,
-// it creates a new user. Then it generates a new OTP code and expiration time, saves it to the database,
-// and returns the code and expiration time. If a user already exists, it just generates a new code.
-func (database *Database) sendOTP(email string) (string, string, error) {
+// SendOTP generates a new OTP for the given email. A user record is created
+// on first contact. The previous OTP, if any, is replaced with a fresh code.
+func (d *Database) SendOTP(email string) (string, string, error) {
 	var user models.User
-	err := database.Connection.Where("email = ?", email).First(&user).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			newUser := models.User{
-				ID:               uuid.New().String(),
-				Email:            email,
-				Username:         "",
-				EmailVerifiedAt:  "",
-				RegistrationStep: models.FirstStep,
-				CreatedAt:        time.Now().Format(time.RFC3339),
-				UpdatedAt:        time.Now().Format(time.RFC3339),
-			}
-
-			if err := database.Connection.Create(&newUser).Error; err != nil {
-				return "", "", err
-			}
-
-			user = newUser
-		} else {
-			return "", "", err
-		}
-	}
-
-	var otp models.OTP
-	err = database.Connection.Where("user_id = ?", user.ID).First(&otp).Error
+	err := d.Connection.Where("email = ?", email).First(&user).Error
 	if err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", "", err
 		}
+
+		now := time.Now().Format(time.RFC3339)
+		user = models.User{
+			ID:               uuid.New().String(),
+			Email:            email,
+			Username:         "",
+			EmailVerifiedAt:  "",
+			RegistrationStep: models.FirstStep,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		if err := d.Connection.Create(&user).Error; err != nil {
+			return "", "", err
+		}
 	}
 
-	if otp.ID == 0 {
-		newCode := otp.GenerateOTP()
-		expirationTime := time.Now().Add(time.Minute * 5).Format(time.RFC3339)
+	code := (&models.OTP{}).GenerateOTP()
+	expirationTime := time.Now().Add(5 * time.Minute).Format(time.RFC3339)
+	now := time.Now().Format(time.RFC3339)
 
+	var otp models.OTP
+	err = d.Connection.Where("user_id = ?", user.ID).First(&otp).Error
+	switch {
+	case err == nil:
+		if err := d.Connection.Model(&otp).Updates(models.OTP{
+			Code:         code,
+			CodeExpireAt: expirationTime,
+			UpdatedAt:    now,
+		}).Error; err != nil {
+			return "", "", err
+		}
+	case errors.Is(err, gorm.ErrRecordNotFound):
 		otp = models.OTP{
 			UserID:       user.ID,
 			Email:        user.Email,
-			PhoneNumber:  "", // Add phone number if needed
-			Code:         newCode,
+			PhoneNumber:  "",
+			Code:         code,
 			CodeExpireAt: expirationTime,
-			CreatedAt:    time.Now().Format(time.RFC3339),
-			UpdatedAt:    time.Now().Format(time.RFC3339),
+			CreatedAt:    now,
+			UpdatedAt:    now,
 		}
-
-		if err := database.Connection.Create(&otp).Error; err != nil {
+		if err := d.Connection.Create(&otp).Error; err != nil {
 			return "", "", err
 		}
-
-		return newCode, expirationTime, nil
-	}
-
-	newCode := otp.GenerateOTP()
-	expirationTime := time.Now().Add(time.Minute * 5).Format(time.RFC3339)
-
-	if err := database.Connection.Model(&otp).Updates(models.OTP{Code: newCode, CodeExpireAt: expirationTime}).Error; err != nil {
+	default:
 		return "", "", err
 	}
 
-	return newCode, expirationTime, nil
+	return code, expirationTime, nil
 }
 
-func (database *Database) OauthGetOrCreateUser(email string, username string) (*models.User, error) {
-	var user models.User
-	err := database.Connection.Where("email = ?", email).First(&user).Error
+// VerifyCode validates the OTP email/code pair, clears the code so it cannot
+// be replayed, and moves the user's registration forward. Expired codes are
+// rejected.
+func (d *Database) VerifyCode(email, code string) (*models.User, error) {
+	var otp models.OTP
+	err := d.Connection.Where("email = ? AND code = ?", email, code).First(&otp).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			newUser := models.User{
-				ID:               uuid.New().String(),
-				Email:            email,
-				Username:         username,
-				EmailVerifiedAt:  time.Now().Format(time.RFC3339),
-				RegistrationStep: models.SecondStep,
-				CreatedAt:        time.Now().Format(time.RFC3339),
-				UpdatedAt:        time.Now().Format(time.RFC3339),
-			}
-
-			var otp models.OTP
-			err = database.Connection.Where("user_id = ?", newUser.ID).First(&otp).Error
-			if err != nil {
-				if !errors.Is(err, gorm.ErrRecordNotFound) {
-					return nil, err
-				}
-			}
-
-			if otp.ID == 0 {
-				expirationTime := time.Now().Add(time.Minute * 5).Format(time.RFC3339)
-
-				otp = models.OTP{
-					UserID:       newUser.ID,
-					Email:        newUser.Email,
-					PhoneNumber:  "", // Add phone number if needed
-					Code:         "",
-					CodeExpireAt: expirationTime,
-					CreatedAt:    time.Now().Format(time.RFC3339),
-					UpdatedAt:    time.Now().Format(time.RFC3339),
-				}
-
-				if err := database.Connection.Create(&otp).Error; err != nil {
-					return nil, err
-				}
-			}
-
-			if err := database.Connection.Create(&newUser).Error; err != nil {
-				return nil, err
-			}
-
-			return &newUser, nil
-		}
-		return nil, err
-	}
-	return &user, nil
-}
-
-// verifyCode verifies an OTP code by retrieving the OTP record with the
-// provided email and code. Its nulls out the code and expiration in the OTP
-// record, retrieves the user record, updates the user's registration step
-// if needed, reloads the user object, and updates the user's email_verified_at
-// field. It returns the verified user record. Any errors are returned.
-func (database *Database) verifyCode(email, code string) (*models.User, error) {
-	// retrieve OTP record
-	var otp models.OTP
-	if err := database.Connection.Where("email = ? AND code = ?", email, code).First(&otp).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("OTP record not found")
+			return nil, ErrOTPNotFound
 		}
 		return nil, err
 	}
 
-	// update the OTP record with null values for Code and CodeExpireAt
-	if err := database.Connection.Model(&otp).Update("code", nil).Error; err != nil {
+	if expired, parseErr := isOTPExpired(otp.CodeExpireAt); parseErr != nil || expired {
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		return nil, ErrOTPExpired
+	}
+
+	if err := d.Connection.Model(&otp).Updates(map[string]interface{}{
+		"code":           nil,
+		"code_expire_at": "",
+		"updated_at":     time.Now().Format(time.RFC3339),
+	}).Error; err != nil {
 		return nil, err
 	}
 
-	// retrieve user information
 	user := &models.User{}
-	if err := database.Connection.Where("id = ?", otp.UserID).First(user).Error; err != nil {
+	if err := d.Connection.Where("id = ?", otp.UserID).First(user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrUserNotFound
+		}
 		return nil, err
 	}
 
-	// update the user's registration step to SECOND_STEP if it is currently at FIRST_STEP
 	if user.RegistrationStep == models.FirstStep {
-		if _, err := database.updateUserRegistrationStep(otp.UserID, models.SecondStep); err != nil {
+		if _, err := d.UpdateUserRegistrationStep(user.ID, models.SecondStep); err != nil {
 			return nil, err
 		}
-
-		// Reload the user object to reflect the updated values
-		if err := database.Connection.Where("id = ?", otp.UserID).First(user).Error; err != nil {
-			return nil, err
-		}
-
-		// update the user's email_verified_at field with the current time
-		if err := database.Connection.Model(&models.User{}).Where("id = ?", otp.UserID).Update("email_verified_at", time.Now().Format(time.RFC3339)).Error; err != nil {
-			return nil, err
-		}
+		user.RegistrationStep = models.SecondStep
+		user.EmailVerifiedAt = time.Now().Format(time.RFC3339)
 	}
 
 	return user, nil
 }
 
-// updateUserRegistrationStep updates the registration step for the user with the given ID.
-// It returns the updated registration step value, or an error if the update fails.
-func (database *Database) updateUserRegistrationStep(userID string, step int) (int, error) {
+// UpdateUserRegistrationStep persists a new registration step for the user.
+func (d *Database) UpdateUserRegistrationStep(userID string, step int) (int, error) {
 	var user models.User
-	err := database.Connection.Where("id = ?", userID).First(&user).Error
+	err := d.Connection.Where("id = ?", userID).First(&user).Error
 	if err != nil {
-		if errors.Is(gorm.ErrRecordNotFound, err) {
-			return 0, errors.New("user not found")
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, ErrUserNotFound
 		}
 		return 0, err
 	}
 
-	user.RegistrationStep = step
-	user.UpdatedAt = time.Now().Format(time.RFC3339)
-	if err := database.Connection.Save(&user).Error; err != nil {
-		return 0, err
+	if user.RegistrationStep == step {
+		return user.RegistrationStep, nil
 	}
 
+	user.RegistrationStep = step
+	user.UpdatedAt = time.Now().Format(time.RFC3339)
+	if err := d.Connection.Save(&user).Error; err != nil {
+		return 0, err
+	}
 	return user.RegistrationStep, nil
 }
 
-// updateUsername updates the username for the given user, saving the updated user
-// object back to the database. It also updates the username in the user's profile.
-// Returns the updated user object, or an error if the update fails.
-func (database *Database) updateUsername(user *models.User, username string) (*models.User, error) {
-	// Check if the new username is unique
-	if err := database.isUsernameUnique(username, user.ID); err != nil {
+// UpdateUsername updates the username for the given user and mirrors it into
+// the user's profile.
+func (d *Database) UpdateUsername(user *models.User, username string) (*models.User, error) {
+	if err := d.IsUsernameUnique(username, user.ID); err != nil {
 		return nil, err
 	}
 
 	user.Username = username
 	user.UpdatedAt = time.Now().Format(time.RFC3339)
-	if err := database.Connection.Save(&user).Error; err != nil {
-		return nil, err
-	}
-	err := database.updateProfile(user.ID, models.KeyUsername, username)
-	if err != nil {
+	if err := d.Connection.Save(user).Error; err != nil {
 		return nil, err
 	}
 
+	if err := d.updateProfile(user.ID, models.KeyUsername, username); err != nil {
+		return nil, err
+	}
 	return user, nil
 }
 
-// updateProfile updates the value for the given profile item key for the user.
-// It first checks if a profile record exists for that user ID and key.
-// If not, it will create a new record if the itemValue is not empty.
-// If a record exists, it updates the value and timestamps.
-func (database *Database) updateProfile(userId string, itemKey string, itemValue string) error {
-	var profile models.Profile
-	result := database.Connection.Where("user_id = ? AND `key` = ?", userId, itemKey).First(&profile)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			if itemValue != "" {
-				newProfile := models.Profile{
-					UserId:    userId,
-					Key:       itemKey,
-					Value:     itemValue,
-					CreatedAt: time.Now().Format(time.RFC3339),
-					UpdatedAt: time.Now().Format(time.RFC3339),
-				}
-				if err := database.Connection.Create(&newProfile).Error; err != nil {
-					return err
-				}
-			}
-		} else {
-			return result.Error
-		}
-	} else {
-		if itemValue != "" {
-			profile.Value = itemValue
-			profile.UpdatedAt = time.Now().Format(time.RFC3339)
-			if profile.ID == 0 {
-				// Check if the profile has an ID (indicating it's a new record)
-				if err := database.Connection.Create(&profile).Error; err != nil {
-					return err
-				}
-			} else {
-				if err := database.Connection.Save(&profile).Error; err != nil {
-					return err
-				}
-			}
-			if itemKey == models.KeyUsername {
-				user, err := database.getUserByID(userId)
-				if err != nil {
-					return err
-				}
+// UpdateProfile creates or updates the profile key/value pair for the user.
+func (d *Database) UpdateProfile(userId, itemKey, itemValue string) error {
+	return d.updateProfile(userId, itemKey, itemValue)
+}
 
-				if user.RegistrationStep == models.SecondStep {
-					_, err := database.updateUserRegistrationStep(userId, models.ThirdStep)
-					if err != nil {
-						return err
-					}
-				}
-			}
-			if itemKey == models.KeyFavoriteCategories {
-				u, err := database.getUserByID(userId)
-				if err != nil {
-					return err
-				}
-
-				if u.RegistrationStep == models.ThirdStep {
-					_, err := database.updateUserRegistrationStep(userId, models.FourthStep)
-					if err != nil {
-						return err
-					}
-				}
-			}
-		} else {
-			return nil
-		}
+func (d *Database) updateProfile(userId, itemKey, itemValue string) error {
+	if itemValue == "" {
+		return nil
 	}
 
+	var profile models.Profile
+	result := d.Connection.Where("user_id = ? AND `key` = ?", userId, itemKey).First(&profile)
+	switch {
+	case result.Error == nil:
+		profile.Value = itemValue
+		profile.UpdatedAt = time.Now().Format(time.RFC3339)
+		if err := d.Connection.Save(&profile).Error; err != nil {
+			return err
+		}
+	case errors.Is(result.Error, gorm.ErrRecordNotFound):
+		newProfile := models.Profile{
+			UserId:    userId,
+			Key:       itemKey,
+			Value:     itemValue,
+			CreatedAt: time.Now().Format(time.RFC3339),
+			UpdatedAt: time.Now().Format(time.RFC3339),
+		}
+		if err := d.Connection.Create(&newProfile).Error; err != nil {
+			return err
+		}
+	default:
+		return result.Error
+	}
+
+	// Moving forward in the registration flow as profile data comes in.
+	if user, err := d.GetUserByID(userId); err == nil {
+		switch itemKey {
+		case models.KeyUsername:
+			if user.RegistrationStep == models.SecondStep {
+				if _, err := d.UpdateUserRegistrationStep(userId, models.ThirdStep); err != nil {
+					return err
+				}
+			}
+		case models.KeyFavoriteCategories:
+			if user.RegistrationStep == models.ThirdStep {
+				if _, err := d.UpdateUserRegistrationStep(userId, models.FourthStep); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return nil
 }
 
-// FetchProfileByUserIDAndKey retrieves the profile value for the given user ID
-// and profile key from the database. Returns an empty string if no matching
-// profile is found.
-func (database *Database) FetchProfileByUserIDAndKey(userID string, itemKey string) string {
+// FetchProfileByUserIDAndKey retrieves a single profile value.
+func (d *Database) FetchProfileByUserIDAndKey(userID, itemKey string) string {
 	var profile models.Profile
-	query := "SELECT value FROM profiles WHERE user_id = ? AND `key` = ? LIMIT 1"
-	result := database.Connection.Raw(query, userID, itemKey).Scan(&profile)
+	result := d.Connection.Raw(
+		"SELECT user_id, `key`, value FROM profiles WHERE user_id = ? AND `key` = ? LIMIT 1",
+		userID, itemKey,
+	).Scan(&profile)
 	if result.Error != nil {
 		return ""
 	}
 	return profile.Value
 }
 
-// isUsernameUnique checks if the given username already exists for a different user ID.
-// Returns nil if the username is unique, or an error if it already exists.
-func (database *Database) isUsernameUnique(username string, userID string) error {
+// IsUsernameUnique checks that no other user already owns the username.
+func (d *Database) IsUsernameUnique(username, userID string) error {
 	var existingUser models.User
-	if err := database.Connection.Where("username = ? AND id != ?", username, userID).First(&existingUser).Error; err == nil {
-		return errors.New("username already exists")
+	if err := d.Connection.Where("username = ? AND id != ?", username, userID).First(&existingUser).Error; err == nil {
+		return ErrUsernameTaken
 	}
 	return nil
 }
 
-// deleteProfile deletes the profile record for the given user ID and profile
-// key from the database. It first queries for the profile record. If not
-// found, it returns nil. If found, it deletes the record and returns any
-// errors.
-func (database *Database) deleteProfile(userId string, itemKey string) error {
+// DeleteProfile removes the profile key for the user. Deleting a missing key
+// is not an error.
+func (d *Database) DeleteProfile(userId, itemKey string) error {
 	var profile models.Profile
-	result := database.Connection.Where("user_id = ? AND `key` = ?", userId, itemKey).First(&profile)
+	result := d.Connection.Where("user_id = ? AND `key` = ?", userId, itemKey).First(&profile)
 	if result.Error != nil {
-		if result.Error == gorm.ErrRecordNotFound {
-			// Profile record not found, no action needed
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil
-		} else {
-			// Error occurred while querying for the profile record
-			return result.Error
 		}
+		return result.Error
+	}
+	return d.Connection.Delete(&profile).Error
+}
+
+// AddCategory appends a category ID to the user's favorite categories list.
+func (d *Database) AddCategory(userId, categoryId string) error {
+	if categoryId == "" {
+		return errors.New("category_id is required")
 	}
 
-	// Delete the profile record
-	if err := database.Connection.Delete(&profile).Error; err != nil {
+	profile, err := d.getCategoryProfile(userId)
+	if err != nil {
 		return err
 	}
 
-	return nil
+	for _, id := range splitCategories(profile.Value) {
+		if id == categoryId {
+			return ErrCategoryExists
+		}
+	}
+	profile.Value = strings.Join(append(splitCategories(profile.Value), categoryId), ",")
+
+	return d.Connection.Model(&profile).
+		Where("user_id = ? AND `key` = ?", userId, models.KeyFavoriteCategories).
+		Updates(map[string]interface{}{
+			"value":      profile.Value,
+			"updated_at": time.Now().Format(time.RFC3339),
+		}).Error
 }
 
-// addCategory adds the given category ID to the user's list of favorite categories.
-// It first checks if the category ID is provided, returns an error if not.
-// Then it gets the user's profile, extracts the existing category IDs, checks if
-// the given ID already exists, and appends the new ID if not. Finally, it updates
-// the profile with the new category list. Returns any errors encountered.
-func (database *Database) addCategory(userId string, categoryId string) error {
-	// Check if the category ID is provided
+// DeleteCategory removes a category ID from the user's favorite categories
+// list. Removing a category that is not in the list is an error.
+func (d *Database) DeleteCategory(userId, categoryId string) error {
 	if categoryId == "" {
 		return errors.New("category_id is required")
 	}
 
-	// Get the user profile
-	var profile models.Profile
-	result := database.Connection.Where("user_id = ? AND `key` = ?", userId, "favorite_categories").First(&profile)
-	if result.Error != nil {
-		// Handle error or create a new profile if not found
-		return result.Error
+	profile, err := d.getCategoryProfile(userId)
+	if err != nil {
+		return err
 	}
 
-	// Extract existing category IDs
-	categoriesID := strings.Split(profile.Value, ",")
-
-	// Check if the category is already in the list
-	for _, id := range categoriesID {
+	categories := splitCategories(profile.Value)
+	kept := make([]string, 0, len(categories))
+	removed := false
+	for _, id := range categories {
 		if id == categoryId {
-			return errors.New("category already in the list")
+			removed = true
+			continue
 		}
+		kept = append(kept, id)
 	}
-
-	// Add the new category ID
-	categoriesID = append(categoriesID, categoryId)
-
-	// Update the profile with the new category list
-	updatedCategories := strings.Join(categoriesID, ",")
-	result = database.Connection.Model(&profile).Where("user_id = ? AND `key` = ?", userId, "favorite_categories").Update("value", updatedCategories)
-	if result.Error != nil {
-		return result.Error
+	if !removed {
+		return ErrCategoryMissing
 	}
+	profile.Value = strings.Join(kept, ",")
 
-	return nil
+	return d.Connection.Model(&profile).
+		Where("user_id = ? AND `key` = ?", userId, models.KeyFavoriteCategories).
+		Updates(map[string]interface{}{
+			"value":      profile.Value,
+			"updated_at": time.Now().Format(time.RFC3339),
+		}).Error
 }
 
-// deleteCategory removes the provided categoryId from the
-// comma-separated list of favorite category IDs stored in
-// the user's profile. It returns an error if the categoryId
-// is not found in the existing list.
-func (database *Database) deleteCategory(userId string, categoryId string) error {
-	// Check if the category ID is provided
-	if categoryId == "" {
-		return errors.New("category_id is required")
+// AllUsers lists users other than the given one, optionally filtered by a
+// search query and limited, enriched with profile data.
+func (d *Database) AllUsers(userId string, q string, limit int) []models.User {
+	users, err := d.listUsers(userId, q, limit, 0)
+	if err != nil {
+		return nil
 	}
-
-	// Get the user profile
-	var profile models.Profile
-	result := database.Connection.Where("user_id = ? AND `key` = ?", userId, "favorite_categories").First(&profile)
-	if result.Error != nil {
-		// Handle error if profile not found
-		return result.Error
-	}
-
-	// Extract existing category IDs
-	categoriesID := strings.Split(profile.Value, ",")
-
-	// Check if the category is in the list
-	found := false
-	for i, id := range categoriesID {
-		if id == categoryId {
-			found = true
-			// Remove the category from the list
-			categoriesID = append(categoriesID[:i], categoriesID[i+1:]...)
-			break
-		}
-	}
-
-	if !found {
-		return errors.New("category not found in the list")
-	}
-
-	// Update the profile with the updated category list
-	updatedCategories := strings.Join(categoriesID, ",")
-	result = database.Connection.Model(&profile).Where("user_id = ? AND `key` = ?", userId, "favorite_categories").Update("value", updatedCategories)
-	if result.Error != nil {
-		return result.Error
-	}
-
-	return nil
-}
-
-// allUsers returns a slice of all User models in the database, except for
-// the provided userId. It joins additional profile data like display
-// name, avatar, etc. and applies search filtering if a search query is
-// provided.
-func (database *Database) allUsers(userId string, q string, limit int) []models.User {
-	var users []models.User
-
-	query := database.Connection.Table("users").
-		Select("users.*, profiles_display_name.value as display_name, profiles_about.value as about").
-		Joins("LEFT JOIN profiles as profiles_display_name ON profiles_display_name.user_id = users.id AND profiles_display_name.key = ?", models.KeyDisplayName).
-		Joins("LEFT JOIN profiles as profiles_about ON profiles_about.user_id = users.id AND profiles_about.key = ?", models.KeyAbout).
-		Where("users.id != ?", userId)
-
-	if q != "" {
-		query = query.Where("users.username LIKE ? OR profiles_display_name.value LIKE ? OR profiles_about.value LIKE ?", "%"+q+"%", "%"+q+"%", "%"+q+"%")
-	}
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-
-	query.Order("users.created_at desc").Find(&users)
-	for i := range users {
-		users[i].Avatar = users[i].GetAvatar(database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyAvatar))
-		users[i].Cover = users[i].GetCover(database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyCover))
-		users[i].DisplayName = database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyDisplayName)
-		users[i].About = database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyAbout)
-		users[i].FavoriteCategories = database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyFavoriteCategories)
-	}
-
 	return users
 }
 
-// getUsersByIds retrieves a list of User models by their IDs, excluding
-// the given user ID and any users in the blockedIds list. It joins additional
-// profile data like display name and about text.
-func (database *Database) getUsersByIds(userId string, userIds []string) ([]models.User, error) {
-	var users []models.User
+// AllUsersWithPagination lists users other than the given one with page/pageSize
+// pagination and optional search query, enriched with profile data.
+func (d *Database) AllUsersWithPagination(userId string, q string, page, pageSize int) []models.User {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		return []models.User{}
+	}
 
+	users, err := d.listUsers(userId, q, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil
+	}
+	return users
+}
+
+func (d *Database) listUsers(userId, q string, limit, offset int) ([]models.User, error) {
+	query := d.Connection.Table("users").
+		Joins("LEFT JOIN profiles as profiles_display_name ON profiles_display_name.user_id = users.id AND profiles_display_name.key = ?", models.KeyDisplayName).
+		Joins("LEFT JOIN profiles as profiles_about ON profiles_about.user_id = users.id AND profiles_about.key = ?", models.KeyAbout).
+		Where("users.id != ?", userId).
+		Order("users.created_at desc")
+
+	if q != "" {
+		search := "%" + q + "%"
+		query = query.Where("users.username LIKE ? OR profiles_display_name.value LIKE ? OR profiles_about.value LIKE ?", search, search, search)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if offset > 0 {
+		query = query.Offset(offset)
+	}
+
+	var users []models.User
+	if err := query.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	d.applyProfilesToUsers(users)
+	return users, nil
+}
+
+// GetUsersByIds retrieves the users matching the given IDs, excluding the
+// requesting user, enriched with profile data.
+func (d *Database) GetUsersByIds(userId string, userIds []string) ([]models.User, error) {
+	var users []models.User
 	if len(userIds) == 0 {
 		return users, nil
 	}
 
-	query := database.Connection.Table("users").
-		Select("users.*, profiles_display_name.value as display_name, profiles_about.value as about").
+	query := d.Connection.Table("users").
 		Joins("LEFT JOIN profiles as profiles_display_name ON profiles_display_name.user_id = users.id AND profiles_display_name.key = ?", models.KeyDisplayName).
 		Joins("LEFT JOIN profiles as profiles_about ON profiles_about.user_id = users.id AND profiles_about.key = ?", models.KeyAbout).
-		Where("users.id != ? AND users.id IN (?)", userId, userIds)
+		Where("users.id != ? AND users.id IN (?)", userId, userIds).
+		Order("users.created_at desc")
 
 	if err := query.Find(&users).Error; err != nil {
 		return nil, err
 	}
-
-	query.Order("users.created_at desc").Find(&users)
-	for i := range users {
-		users[i].Avatar = users[i].GetAvatar(database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyAvatar))
-		users[i].Cover = users[i].GetCover(database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyCover))
-		users[i].DisplayName = database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyDisplayName)
-		users[i].About = database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyAbout)
-		users[i].FavoriteCategories = database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyFavoriteCategories)
-	}
-
+	d.applyProfilesToUsers(users)
 	return users, nil
 }
 
-// FetchProfileByUserID retrieves the profile data for the given user ID from
-// the database. It returns a map of profile keys to values.
-func (database *Database) FetchProfileByUserID(userId string) map[string]string {
-	profile := make(map[string]string)
-
-	rows, err := database.Connection.Table("profiles").
-		Select("key, value"). // TODO: syntax error check
-		Where("user_id = ?", userId).
-		Rows()
-	if err != nil {
-		// Handle the error appropriately
-		// For now, let's return an empty map
-		return profile
+// FetchProfileByUserID returns the user's profile as a key/value map.
+func (d *Database) FetchProfileByUserID(userId string) map[string]string {
+	profiles := make(map[string]string)
+	var rows []models.Profile
+	if err := d.Connection.Where("user_id = ?", userId).Find(&rows).Error; err != nil {
+		return profiles
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
-			// Handle the error, but continue processing other rows
-			continue
-		}
-		profile[key] = value
+	for _, p := range rows {
+		profiles[p.Key] = p.Value
 	}
-
-	if err := rows.Err(); err != nil {
-		// Handle the error, but return the partially populated profile
-		return profile
-	}
-
-	return profile
+	return profiles
 }
 
-func (database *Database) allUsersWithPagination(userId string, q string, page, pageSize int) []models.User {
-	var users []models.User
-
-	query := database.Connection.Table("users").
-		Select("users.*, profiles_display_name.value as display_name, profiles_about.value as about").
-		Joins("LEFT JOIN profiles as profiles_display_name ON profiles_display_name.user_id = users.id AND profiles_display_name.key = ?", models.KeyDisplayName).
-		Joins("LEFT JOIN profiles as profiles_about ON profiles_about.user_id = users.id AND profiles_about.key = ?", models.KeyAbout).
-		Where("users.id != ?", userId)
-
-	if q != "" {
-		query = query.Where("users.username LIKE ? OR profiles_display_name.value LIKE ? OR profiles_about.value LIKE ?", "%"+q+"%", "%"+q+"%", "%"+q+"%")
+// OauthGetOrCreateUser returns the user for the given email or creates one
+// when it does not exist yet.
+func (d *Database) OauthGetOrCreateUser(email, username string) (*models.User, error) {
+	var user models.User
+	err := d.Connection.Where("email = ?", email).First(&user).Error
+	if err == nil {
+		return &user, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
 	}
 
-	offset := (page - 1) * pageSize
-	query = query.Offset(offset).Limit(pageSize)
-
-	query.Order("users.created_at desc").Find(&users)
-	for i := range users {
-		users[i].Avatar = users[i].GetAvatar(database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyAvatar))
-		users[i].Cover = users[i].GetCover(database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyCover))
-		users[i].DisplayName = database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyDisplayName)
-		users[i].About = database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyAbout)
-		users[i].FavoriteCategories = database.FetchProfileByUserIDAndKey(users[i].ID, models.KeyFavoriteCategories)
+	now := time.Now().Format(time.RFC3339)
+	newUser := models.User{
+		ID:               uuid.New().String(),
+		Email:            email,
+		Username:         username,
+		EmailVerifiedAt:  now,
+		RegistrationStep: models.SecondStep,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
-
-	return users
+	if err := d.Connection.Create(&newUser).Error; err != nil {
+		return nil, err
+	}
+	return &newUser, nil
 }
 
-// CreateSocialAuthClient creates a new social authentication record for the given provider and user ID.
-// If a record already exists for the given user ID and provider, it returns without creating a new record.
-// If an error occurs while querying for the existing record, the error is returned.
-func (database *Database) CreateSocialAuthClient(provider, userId, providerUserId string) error {
+// CreateSocialAuthClient records a social login binding for the user. The
+// binding is created once per provider.
+func (d *Database) CreateSocialAuthClient(provider, userId, providerUserId string) error {
 	var social models.SocialAuth
-	result := database.Connection.Where("user_id = ? AND `provider` = ?", userId, provider).First(&social)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			record := &models.SocialAuth{
-				UserId:         userId,
-				Provider:       provider,
-				ProviderUserID: providerUserId,
-				CreatedAt:      time.Now().Format(time.RFC3339),
-			}
-			fmt.Println(providerUserId)
-			if err := database.Connection.Create(&record).Error; err != nil {
-				return err
-			}
-			return nil
-		} else {
-			// Error occurred while querying for the profile record
-			return result.Error
+	result := d.Connection.Where("user_id = ? AND provider = ?", userId, provider).First(&social)
+	switch {
+	case result.Error == nil:
+		return nil
+	case errors.Is(result.Error, gorm.ErrRecordNotFound):
+		record := models.SocialAuth{
+			UserId:         userId,
+			Provider:       provider,
+			ProviderUserID: providerUserId,
+			CreatedAt:      time.Now().Format(time.RFC3339),
 		}
+		return d.Connection.Create(&record).Error
+	default:
+		return result.Error
 	}
-	return nil
+}
+
+// --- profile enrichment helpers ---
+
+// fetchProfilesForUserIDs loads all profile rows for the given user ids in a
+// single query and groups them per user.
+func (d *Database) fetchProfilesForUserIDs(userIDs []string) map[string]map[string]string {
+	profiles := make(map[string]map[string]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return profiles
+	}
+
+	var rows []models.Profile
+	if err := d.Connection.Where("user_id IN (?)", userIDs).Find(&rows).Error; err != nil {
+		return profiles
+	}
+	for _, row := range rows {
+		userProfiles, ok := profiles[row.UserId]
+		if !ok {
+			userProfiles = make(map[string]string)
+			profiles[row.UserId] = userProfiles
+		}
+		userProfiles[row.Key] = row.Value
+	}
+	return profiles
+}
+
+// applyProfiles enriches a user with its profile map, resolving file based
+// values through the file service.
+func (d *Database) applyProfiles(user *models.User, profiles map[string]string) {
+	user.Avatar = d.resolveFile(profiles[models.KeyAvatar])
+	user.Cover = d.resolveFile(profiles[models.KeyCover])
+	user.DisplayName = profiles[models.KeyDisplayName]
+	user.FirstName = profiles[models.KeyFirstName]
+	user.LastName = profiles[models.KeyLastName]
+	user.Birthdate = profiles[models.KeyBirthday]
+	user.Age = profiles[models.KeyAge]
+	user.About = profiles[models.KeyAbout]
+	user.Gender = profiles[models.KeyGender]
+	user.FavoriteCategories = profiles[models.KeyFavoriteCategories]
+}
+
+// applyProfilesToUsers enriches all users in one go, using a single profile
+// query instead of one per user per key.
+func (d *Database) applyProfilesToUsers(users []models.User) {
+	if len(users) == 0 {
+		return
+	}
+	ids := make([]string, len(users))
+	for i := range users {
+		ids[i] = users[i].ID
+	}
+	profiles := d.fetchProfilesForUserIDs(ids)
+	for i := range users {
+		d.applyProfiles(&users[i], profiles[users[i].ID])
+	}
+}
+
+// resolveFile maps a stored file ID to its public URL, tolerating lookup
+// failures by returning an empty string.
+func (d *Database) resolveFile(fileID string) string {
+	url, err := utils.GetFilePath(fileID)
+	if err != nil || url == "" {
+		return ""
+	}
+	return url
+}
+
+func (d *Database) getCategoryProfile(userId string) (models.Profile, error) {
+	var profile models.Profile
+	err := d.Connection.Where("user_id = ? AND `key` = ?", userId, models.KeyFavoriteCategories).First(&profile).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return profile, ErrProfileNotFound
+		}
+		return profile, err
+	}
+	return profile, nil
+}
+
+func splitCategories(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
+}
+
+func isOTPExpired(expireAt string) (bool, error) {
+	if expireAt == "" {
+		return true, nil
+	}
+	expireTime, err := time.Parse(time.RFC3339, expireAt)
+	if err != nil {
+		return false, fmt.Errorf("parsing OTP expiration: %w", err)
+	}
+	return time.Now().After(expireTime), nil
 }

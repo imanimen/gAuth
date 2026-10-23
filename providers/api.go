@@ -2,28 +2,25 @@ package providers
 
 import (
 	"context"
-	_ "fmt"
+	"errors"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/imanimen/gAuth/middlewares"
+	"github.com/imanimen/gAuth/models"
 	"github.com/imanimen/gAuth/services"
 	"github.com/imanimen/gAuth/utils"
-
-	// "git.dyneemadev.com/micro-services/go-auth/models"
-	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/imanimen/gAuth/models"
 )
 
+// IApi groups the public HTTP handlers of the service.
 type IApi interface {
 	GetUser(c *gin.Context)
 	SendOtp(c *gin.Context)
 	ResendOtp(c *gin.Context)
 	VerifyOtp(c *gin.Context)
-	GetUserById(id string) (*models.User, error)
 	GetUserTokenPlatform(c *gin.Context)
 	Check(c *gin.Context)
 	UpdateUserName(c *gin.Context)
@@ -37,628 +34,660 @@ type IApi interface {
 	UsersPagination(c *gin.Context)
 	OauthRedirect(c *gin.Context)
 	OauthCallBack(c *gin.Context)
+
+	GetUserByID(id string) (*models.User, error)
+	TokenManager() services.TokenManager
 }
 
+// Api is the default IApi implementation.
 type Api struct {
 	Config      IConfig
 	Database    IDatabase
 	Validations IValidations
+	Tokens      services.TokenManager
+	OAuth       *services.OAuthSettings
 }
 
-func NewApi(config IConfig, database IDatabase, validations IValidations) IApi {
+// NewApi wires the handler layer.
+func NewApi(config IConfig, database IDatabase, validations IValidations, tokens services.TokenManager, oauth *services.OAuthSettings) IApi {
 	return &Api{
 		Config:      config,
 		Database:    database,
 		Validations: validations,
+		Tokens:      tokens,
+		OAuth:       oauth,
 	}
 }
 
-// GetUserById retrieves a user model by ID from the database.
-func (api *Api) GetUserById(id string) (*models.User, error) {
-	return api.Database.getUserByID(id)
+// TokenManager exposes the JWT token manager for the routed middleware.
+func (api *Api) TokenManager() services.TokenManager {
+	return api.Tokens
 }
 
-// GetUser retrieves the user with the given ID from the database
-// and returns it in the response. It gets the ID from the URL param "id",
-// looks up the user in the database using the APIs Database provider,
-// and returns a JSON response containing the API version and user data.
-// Returns a 200 OK status code.
+// GetUserByID retrieves a user model by ID from the database.
+func (api *Api) GetUserByID(id string) (*models.User, error) {
+	return api.Database.GetUserByID(id)
+}
+
+// GetUser godoc
+// @Summary  Get user by ID
+// @Description  Returns the public profile of the user with the given ID.
+// @Tags  users
+// @Produce  json
+// @Param  id  path  string  true  "User ID"
+// @Success  200  {object}  ResponseUser
+// @Failure  401  {object}  ErrorResponse
+// @Failure  404  {object}  ErrorResponse
+// @Router  /auth/user/{id}  [get]
+// @Security  BearerAuth
 func (api *Api) GetUser(c *gin.Context) {
 	id := c.Param("id")
-	user, _ := api.Database.getUserByID(id)
-	c.JSON(http.StatusOK, gin.H{
-		"version": api.Config.Get("apiVersion"),
-		"data":    user,
-	})
+
+	user, err := api.Database.GetUserByID(id)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			RespondError(c, http.StatusNotFound, err.Error())
+			return
+		}
+		RespondError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondAsUser(c, user)
 }
 
-// SendOtp sends a one-time password code to the provided email address.
-// It generates a random OTP code, stores it with an expiration timestamp in the database,
-// and dispatches a notification to send the OTP code to the user.
-// Returns the OTP code, expiration timestamp, and any error from the database layer.
+// SendOtp godoc
+// @Summary  Send OTP code
+// @Description  Generates an OTP code for the given email address and sends it via the notification service.
+// @Tags  auth
+// @Accept  json
+// @Produce  json
+// @Param  request  body  SendOtpRequest  true  "Email address"
+// @Success  200  {object}  ResponseOTP
+// @Failure  422  {object}  ErrorResponse
+// @Failure  500  {object}  ErrorResponse
+// @Router  /api/auth/send  [post]
 func (api *Api) SendOtp(c *gin.Context) {
-	email := c.PostForm("email")
-	if !api.Validations.IsValidEmail(email) {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "Invalid email format",
-		})
-		return
-	}
-	code, expireAt, err := api.Database.sendOTP(email)
-	// TODO: Uncomment on production level,
-	/*
-		payloadData := []byte(`{
-			"type": ["email"],
-			"payload": "` + code + `",
-			"destination": "` + email + `",
-			"mail_type": "otp"
-		}`)
-
-		// TODO:  Error handle the channel
-		go func() {
-			_, err := services.Call(api.Config.Get("NOTIFY_API_URL")+"/v1/notify", "POST", payloadData)
-			if err != nil {
-				return
-			}
-		}()
-	*/
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"version": api.Config.Get("apiVersion"),
-		"data": gin.H{
-			"code":      code,
-			"expire_at": expireAt,
-		},
-	})
+	api.dispatchOtp(c)
 }
 
-// ResendOtp re-send a one-time password code to the provided email address.
-// It re-generates a random OTP code, stores it with a new expiration timestamp in the database,
-// and dispatches a notification to re-send the OTP code to the user.
-// Returns the new OTP code, new expiration timestamp, and any error from the database layer.
+// ResendOtp godoc
+// @Summary  Resend OTP code
+// @Description  Regenerates and resends the OTP code for the given email address.
+// @Tags  auth
+// @Accept  json
+// @Produce  json
+// @Param  request  body  SendOtpRequest  true  "Email address"
+// @Success  200  {object}  ResponseOTP
+// @Failure  422  {object}  ErrorResponse
+// @Failure  500  {object}  ErrorResponse
+// @Router  /api/auth/resend  [post]
 func (api *Api) ResendOtp(c *gin.Context) {
-	email := c.PostForm("email")
-	if !api.Validations.IsValidEmail(email) {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "Invalid email format",
-		})
-		return
-	}
-	code, expireAt, err := api.Database.sendOTP(email)
-	// TODO: Uncomment on production level,
-	/*
-		payloadData := []byte(`{
-			"type": ["email"],
-			"payload": "` + code + `",
-			"destination": "` + email + `",
-			"mail_type": "otp"
-		}`)
+	api.dispatchOtp(c)
+}
 
-		// TODO:  Error handle the channel
-		go func() {
-			_, err := services.Call(api.Config.Get("NOTIFY_API_URL")+"/v1/notify", "POST", payloadData)
-			if err != nil {
-				return
-			}
-		}()
-	*/
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
+func (api *Api) dispatchOtp(c *gin.Context) {
+	var request SendOtpRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondError(c, http.StatusUnprocessableEntity, validationErrorMessage(err, "Invalid email format"))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"version": api.Config.Get("apiVersion"),
-		"data": gin.H{
-			"code":      code,
-			"expire_at": expireAt,
-		},
+
+	code, expireAt, err := api.Database.SendOTP(request.Email)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if notifyBase := api.Config.Get("NOTIFY_API_URL"); notifyBase != "" {
+		services.DispatchOTPNotification(strings.TrimSuffix(notifyBase, "/")+"/v1/notify", code, request.Email)
+	}
+
+	RespondOK(c, OTPData{
+		Code:     code,
+		ExpireAt: expireAt,
 	})
 }
 
-// VerifyOtp verifies a one-time password code that was sent to the
-// provided email address. It checks the code against the database,
-// generates a JWT token if valid, and returns user info, token, and any errors.
+// VerifyOtp godoc
+// @Summary  Verify OTP code
+// @Description  Verifies the OTP code and returns an access token for the resulting user session.
+// @Tags  auth
+// @Accept  json
+// @Produce  json
+// @Param  request  body  VerifyOtpRequest  true  "Email, code and platform"
+// @Success  200  {object}  ResponseAuth
+// @Failure  401  {object}  ErrorResponse
+// @Failure  422  {object}  ErrorResponse
+// @Failure  500  {object}  ErrorResponse
+// @Router  /api/auth/verify  [post]
 func (api *Api) VerifyOtp(c *gin.Context) {
-	email := c.PostForm("email")
-	code := c.PostForm("code")
-	platform := c.PostForm("platform")
-	if !api.Validations.IsValidEmail(email) {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "Invalid email format",
-		})
-		return
-	}
-	result, err := api.Database.verifyCode(email, code)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
+	var request VerifyOtpRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondError(c, http.StatusUnprocessableEntity, validationErrorMessage(err, "Invalid request payload"))
 		return
 	}
 
-	// Generate JWT token
-	tokenString, err := services.GenerateJWT(result.ID, map[string]string{"platform": platform})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
+	user, err := api.Database.VerifyCode(request.Email, request.Code)
+	switch {
+	case errors.Is(err, ErrOTPNotFound):
+		RespondError(c, http.StatusUnauthorized, "Invalid code")
+		return
+	case errors.Is(err, ErrOTPExpired):
+		RespondError(c, http.StatusUnauthorized, "OTP code expired, please request a new one")
+		return
+	case errors.Is(err, ErrUserNotFound):
+		RespondError(c, http.StatusNotFound, err.Error())
+		return
+	case err != nil:
+		RespondError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Return the JWT token along with other information
-	c.JSON(http.StatusOK, gin.H{
-		"version": api.Config.Get("apiVersion"),
-		"step":    result.RegistrationStep,
-		"user_id": result.ID,
-		"token":   tokenString,
+	token, err := api.Tokens.Generate(user.ID, request.Platform, nil)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, "Failed to generate token")
+		return
+	}
+
+	RespondOK(c, AuthData{
+		UserID: user.ID,
+		Step:   user.RegistrationStep,
+		Token:  token,
 	})
 }
 
-// GetUserTokenPlatform extracts the "platform" claim from a JWT token
-// passed in the Authorization header. It verifies the token is valid,
-// returns the platform if found, or handles any errors.
+// GetUserTokenPlatform godoc
+// @Summary  Get token platform
+// @Description  Returns the platform claim of the current access token.
+// @Tags  auth
+// @Produce  json
+// @Success  200  {object}  ResponsePlatform
+// @Router  /auth/user/platform  [get]
+// @Security  BearerAuth
 func (api *Api) GetUserTokenPlatform(c *gin.Context) {
-	tokenString := c.GetHeader("Authorization")
-
-	platform, err := services.GetValueFromToken(tokenString, "platform")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"data": gin.H{
-			"platform": platform,
-		},
+	RespondOK(c, PlatformData{
+		Platform: middlewares.CurrentPlatform(c),
 	})
-
 }
 
-// Check validates a JWT token from the Authorization header,
-// extracting the user_id claim and returning the user data.
-// It handles invalid tokens and errors gracefully.
+// Check godoc
+// @Summary  Check session
+// @Description  Returns the authenticated user the current access token belongs to.
+// @Tags  users
+// @Produce  json
+// @Success  200  {object}  ResponseUser
+// @Router  /auth/user/check  [get]
+// @Security  BearerAuth
 func (api *Api) Check(c *gin.Context) {
-	user, err := api.GetUserFromToken(c)
+	user, err := middlewares.CurrentUser(c)
 	if err != nil {
+		RespondError(c, http.StatusUnauthorized, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": user})
+	respondAsUser(c, &user)
 }
 
-// UpdateUserName updates the username for the authenticated user.
-// It validates the username format, parses the JWT token to get the user ID,
-// retrieves the user from the database, and updates the username,
-// returning the updated user data. It handles errors gracefully.
+// UpdateUserName godoc
+// @Summary  Update username
+// @Description  Sets the username of the authenticated user.
+// @Tags  users
+// @Accept  json
+// @Produce  json
+// @Param  request  body  UpdateUsernameRequest  true  "New username"
+// @Success  201  {object}  ResponseUser
+// @Failure  422  {object}  ErrorResponse
+// @Router  /auth/user/update-username  [post]
+// @Security  BearerAuth
 func (api *Api) UpdateUserName(c *gin.Context) {
-	username := c.PostForm("username")
+	var request UpdateUsernameRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondError(c, http.StatusUnprocessableEntity, validationErrorMessage(err, "Invalid request payload"))
+		return
+	}
 
-	if !api.Validations.IsValidUsername(username) {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "Invalid username format",
-		})
+	if !api.Validations.IsValidUsername(request.Username) {
+		RespondError(c, http.StatusUnprocessableEntity, "Invalid username format")
 		return
 	}
-	user, err := api.GetUserFromToken(c)
+
+	user, err := middlewares.CurrentUser(c)
 	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": err.Error(),
-		})
+		RespondError(c, http.StatusUnauthorized, err.Error())
 		return
 	}
-	u := &user
-	update, err := api.Database.updateUsername(u, username)
-	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": err.Error(),
-		})
+
+	update, err := api.Database.UpdateUsername(&user, request.Username)
+	switch {
+	case errors.Is(err, ErrUsernameTaken):
+		RespondError(c, http.StatusUnprocessableEntity, "Username already exists")
+		return
+	case err != nil:
+		RespondError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{
-		"data": update,
-	})
+
+	RespondCreated(c, exitUser(update))
 }
 
-// ValidateUserName validates a username from a POST request.
-// It checks that the username is valid format, unique for the user,
-// and returns appropriate error responses if not valid.
+// ValidateUserName godoc
+// @Summary  Validate username
+// @Description  Checks that the username is free to pick for the authenticated user.
+// @Tags  users
+// @Accept  json
+// @Produce  json
+// @Param  request  body  UpdateUsernameRequest  true  "Username to validate"
+// @Success  200  {object}  ResponseAvailability
+// @Failure  422  {object}  ErrorResponse
+// @Router  /auth/user/validate-username  [post]
+// @Security  BearerAuth
 func (api *Api) ValidateUserName(c *gin.Context) {
-	username := c.PostForm("username")
-
-	if !api.Validations.IsValidUsername(username) {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "Username must be between 4 and 16 characters and start with a letter and can contain letters, numbers, underscores, and dots",
-		})
+	var request UpdateUsernameRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondError(c, http.StatusUnprocessableEntity, validationErrorMessage(err, "Invalid request payload"))
 		return
 	}
-	user, err := api.GetUserFromToken(c)
+
+	if !api.Validations.IsValidUsername(request.Username) {
+		RespondError(c, http.StatusUnprocessableEntity,
+			"Username must be between 4 and 16 characters and start with a letter and can contain letters, numbers, underscores, and dots")
+		return
+	}
+
+	user, err := middlewares.CurrentUser(c)
 	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": err.Error(),
-		})
+		RespondError(c, http.StatusUnauthorized, err.Error())
 		return
 	}
 
-	errorCheck := api.Database.isUsernameUnique(username, user.ID)
-	if errorCheck != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "Username already exists",
-		})
+	if err := api.Database.IsUsernameUnique(request.Username, user.ID); err != nil {
+		RespondError(c, http.StatusUnprocessableEntity, "Username already exists")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"data": errorCheck,
-	})
+
+	RespondOK(c, AvailabilityData{Available: true})
 }
 
-type KeyItem struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-}
-
-// UpdateProfile handles updating a user's profile information. It takes a context
-// parameter which contains the current user's ID. It binds the update keys and values
-// from the request body. It validates each key/value, checking for required keys,
-// max lengths, valid usernames, and unique usernames. For each key, it calls the database
-// layer to update the user's profile. It returns success/error responses.
+// UpdateProfile godoc
+// @Summary  Update profile
+// @Description  Creates or updates profile key/value pairs for the authenticated user. A `birthdate` value also refreshes the computed `age`.
+// @Tags  users
+// @Accept  json
+// @Produce  json
+// @Param  request  body  ProfileUpdateRequest  true  "Profile keys and values"
+// @Success  200  {object}  ResponseMessage
+// @Failure  422  {object}  ErrorResponse
+// @Failure  500  {object}  ErrorResponse
+// @Router  /auth/user/update  [post]
+// @Security  BearerAuth
 func (api *Api) UpdateProfile(c *gin.Context) {
-	u, err := api.GetUserFromToken(c)
+	user, err := middlewares.CurrentUser(c)
 	if err != nil {
+		RespondError(c, http.StatusUnauthorized, err.Error())
 		return
 	}
 
-	var keys struct {
-		Keys []KeyItem `json:"keys"`
-	}
-	if err := c.ShouldBindJSON(&keys); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": err.Error()})
+	var request ProfileUpdateRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondError(c, http.StatusUnprocessableEntity, validationErrorMessage(err, "Invalid request payload"))
 		return
 	}
 
-	for _, item := range keys.Keys {
-
-		if item.Key == "" {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": "Key is required"})
-			return
-		}
-
-		if len(item.Value) > 1500 {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": "Value exceeds maximum length of 1500 characters"})
-			return
-		}
-		if item.Key == "birthdate" {
-			// Convert birthday to age
-			layout := "2006/01/02" // The layout string specifies the format of the input date
-
-			birthDate, err := time.Parse(layout, item.Value)
-			if err != nil {
-				c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": err.Error()})
-
-				return
-			}
-
-			age := utils.CalculateAge(birthDate)
-			err = api.Database.updateProfile(u.ID, models.KeyAge, strconv.Itoa(age))
-			if err != nil {
-				c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": err.Error()})
-
-				return
-			}
-		}
-
-		err := api.Database.updateProfile(u.ID, item.Key, item.Value)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"errors": err.Error()})
+	for _, item := range request.Keys {
+		if err := api.updateProfileItem(user.ID, item); err != nil {
+			handleProfileUpdateError(c, err)
 			return
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Profile updated successfully"})
+	RespondOK(c, MessageData{Message: "Profile updated successfully"})
 }
 
-// GetUserFromToken extracts the user ID from the provided JWT token in the
-// Authorization header, looks up the corresponding user in the database,
-// and returns the user object. It handles validation and errors.
-func (api *Api) GetUserFromToken(c *gin.Context) (user models.User, err error) {
-	tokenString := c.Request.Header.Get("Authorization")
-	if strings.HasPrefix(tokenString, "Bearer ") {
-		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+func (api *Api) updateProfileItem(userID string, item KeyItem) error {
+	if item.Key == "" {
+		return invalidPayloadError{message: "Key is required"}
 	}
-	if tokenString == "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "Authorization token is required",
-		})
-		return
+	if len(item.Value) > maxProfileValueLength {
+		return invalidPayloadError{message: "Value exceeds maximum length of 1500 characters"}
 	}
-	// Parse the token
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		return []byte(os.Getenv("SECRET")), nil
-	})
-
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-		return
-	}
-
-	// Check if the token is valid
-	if !token.Valid {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-		return
-	}
-
-	if claims, ok := token.Claims.(jwt.MapClaims); ok {
-		user_id, exists := claims["user_id"].(string)
-		if !exists {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "user_id not found in token"})
-			return
-		}
-
-		user, err := api.Database.getUserByID(user_id)
+	if item.Key == models.KeyBirthday {
+		birthDate, err := time.Parse(birthdateFormat, item.Value)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": err.Error(),
-			})
-			return *user, err
+			return invalidPayloadError{message: "Invalid birthdate format, expected YYYY/MM/DD"}
 		}
-		return *user, nil
-	} else {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token claims"})
+		if err := api.Database.UpdateProfile(userID, models.KeyAge, strconv.Itoa(utils.CalculateAge(birthDate))); err != nil {
+			return err
+		}
 	}
-	return user, nil
+	if err := api.Database.UpdateProfile(userID, item.Key, item.Value); err != nil {
+		return err
+	}
+	return nil
 }
 
-// RemoveProfile removes profile keys for the authenticated user.
-// It takes a JSON body containing a list of keys to remove, validates the input,
-// calls the database to delete the keys, and returns a success response.
-// It handles errors and returns error responses.
+// RemoveProfile godoc
+// @Summary  Remove profile keys
+// @Description  Deletes the given profile keys of the authenticated user. Deleting missing keys succeeds silently.
+// @Tags  users
+// @Accept  json
+// @Produce  json
+// @Param  request  body  ProfileRemoveRequest  true  "Profile keys to remove"
+// @Success  200  {object}  ResponseMessage
+// @Failure  422  {object}  ErrorResponse
+// @Failure  500  {object}  ErrorResponse
+// @Router  /auth/user/remove-profile  [post]
+// @Security  BearerAuth
 func (api *Api) RemoveProfile(c *gin.Context) {
-	// TODO: add validation to delete specific keys
-	user, err := api.GetUserFromToken(c)
+	user, err := middlewares.CurrentUser(c)
 	if err != nil {
+		RespondError(c, http.StatusUnauthorized, err.Error())
 		return
 	}
 
-	var keys struct {
-		Keys []KeyItem `json:"keys"`
-	}
-	if err := c.ShouldBindJSON(&keys); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": err.Error()})
+	var request ProfileRemoveRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondError(c, http.StatusUnprocessableEntity, validationErrorMessage(err, "Invalid request payload"))
 		return
 	}
 
-	for _, item := range keys.Keys {
-
+	for _, item := range request.Keys {
 		if item.Key == "" {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": "Key is required"})
+			RespondError(c, http.StatusUnprocessableEntity, "Key is required")
 			return
 		}
-
-		err := api.Database.deleteProfile(user.ID, item.Key)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"errors": "Failed to update profile"})
+		if err := api.Database.DeleteProfile(user.ID, item.Key); err != nil {
+			RespondError(c, http.StatusInternalServerError, "Failed to update profile")
 			return
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Profile updated successfully"})
+	RespondOK(c, MessageData{Message: "Profile updated successfully"})
 }
 
-// AddCategory adds a category ID to the authenticated user's profile.
-// It validates the input, calls the database to update the user's profile,
-// and returns a response indicating success or failure.
-// It handles validation errors and database errors.
+// AddCategory godoc
+// @Summary  Add favorite category
+// @Description  Appends a category ID to the authenticated user's favorite categories.
+// @Tags  users
+// @Accept  json
+// @Produce  json
+// @Param  request  body  CategoryRequest  true  "Category ID"
+// @Success  200  {object}  ResponseMessage
+// @Failure  422  {object}  ErrorResponse
+// @Router  /auth/user/add-category  [post]
+// @Security  BearerAuth
 func (api *Api) AddCategory(c *gin.Context) {
-	categoryId := c.PostForm("category_id")
-	user, err := api.GetUserFromToken(c)
-	if err != nil {
-		return
-	}
-
-	if categoryId == "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "category_id is required",
-		})
-		return
-	}
-
-	update := api.Database.addCategory(user.ID, categoryId)
-	if update != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": update.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "Profile updated successfully"})
+	api.handleCategory(c, api.Database.AddCategory)
 }
 
-// DeleteCategory removes a category ID from the authenticated user's profile.
-// It validates the input, calls the database to update the user's profile,
-// and returns a response indicating success or failure.
-// It handles validation errors and database errors.
+// DeleteCategory godoc
+// @Summary  Delete favorite category
+// @Description  Removes a category ID from the authenticated user's favorite categories.
+// @Tags  users
+// @Accept  json
+// @Produce  json
+// @Param  request  body  CategoryRequest  true  "Category ID"
+// @Success  200  {object}  ResponseMessage
+// @Failure  422  {object}  ErrorResponse
+// @Router  /auth/user/delete-category  [post]
+// @Security  BearerAuth
 func (api *Api) DeleteCategory(c *gin.Context) {
-	categoryId := c.PostForm("category_id")
-	user, err := api.GetUserFromToken(c)
-	if err != nil {
-		return
-	}
-
-	if categoryId == "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "category_id is required",
-		})
-		return
-	}
-
-	update := api.Database.deleteCategory(user.ID, categoryId)
-	if update != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": update.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "Profile updated successfully"})
+	api.handleCategory(c, api.Database.DeleteCategory)
 }
 
-// AllUsers retrieves all users that match the given search query.
-// It authenticates the request using the provided token, calls the database
-// to retrieve the filtered list of users, and returns the result.
+func (api *Api) handleCategory(c *gin.Context, action func(userId, categoryId string) error) {
+	var request CategoryRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondError(c, http.StatusUnprocessableEntity, "category_id is required")
+		return
+	}
+
+	user, err := middlewares.CurrentUser(c)
+	if err != nil {
+		RespondError(c, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	switch err := action(user.ID, request.CategoryID); {
+	case err == nil:
+		RespondOK(c, MessageData{Message: "Profile updated successfully"})
+	default:
+		RespondError(c, http.StatusUnprocessableEntity, err.Error())
+	}
+}
+
+// AllUsers godoc
+// @Summary  List users
+// @Description  Lists all users other than the requesting one, filtered by a search query.
+// @Tags  users
+// @Produce  json
+// @Param  q  query  string  false  "Search query"
+// @Param  limit  query  integer  false  "Max results"
+// @Success  200  {object}  ResponseUsers
+// @Failure  500  {object}  ErrorResponse
+// @Router  /auth/user/all-users  [get]
+// @Security  BearerAuth
 func (api *Api) AllUsers(c *gin.Context) {
 	searchQuery := c.Query("q")
-	limitStr := c.Query("limit")
-	user, err := api.GetUserFromToken(c)
+	limit, _ := strconv.Atoi(c.Query("limit"))
+
+	user, err := middlewares.CurrentUser(c)
 	if err != nil {
+		RespondError(c, http.StatusUnauthorized, err.Error())
 		return
 	}
 
-	// Convert the limit parameter to an integer
-	limit, _ := strconv.Atoi(limitStr)
-	users := api.Database.allUsers(user.ID, searchQuery, limit)
-	c.JSON(http.StatusOK, users)
+	users := api.Database.AllUsers(user.ID, searchQuery, limit)
+	if users == nil {
+		RespondError(c, http.StatusInternalServerError, "Failed to fetch users")
+		return
+	}
+	respondAsUsers(c, users)
 }
 
-// SelectedUsers retrieves a list of users with the given IDs.
-// It authenticates the request using the provided token, calls the database
-// to retrieve the users, and returns the result.
-func (api *Api) SelectedUsers(c *gin.Context) {
-	var requestBody struct {
-		UserIds []string `json:"ids"`
-	}
-
-	if err := c.ShouldBindJSON(&requestBody); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
-		return
-	}
-
-	userIds := requestBody.UserIds
-	user, err := api.GetUserFromToken(c)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": err.Error(),
-		})
-		return
-	}
-
-	users, err := api.Database.getUsersByIds(user.ID, userIds)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, users)
-}
-
+// UsersPagination godoc
+// @Summary  List users with pagination
+// @Description  Lists users other than the requesting one, paginated and filtered by a search query.
+// @Tags  users
+// @Produce  json
+// @Param  q  query  string  false  "Search query"
+// @Param  page  query  integer  true  "Page number (1 based)"
+// @Param  pageSize  query  integer  true  "Page size"
+// @Success  200  {object}  ResponseUsers
+// @Failure  500  {object}  ErrorResponse
+// @Router  /auth/user/users  [get]
+// @Security  BearerAuth
 func (api *Api) UsersPagination(c *gin.Context) {
 	searchQuery := c.Query("q")
-	// limitStr := c.Query("limit")
-	pageStr := c.Query("page")
-	pageSizeStr := c.Query("pageSize")
-	user, err := api.GetUserFromToken(c)
+	page, _ := strconv.Atoi(c.Query("page"))
+	pageSize, _ := strconv.Atoi(c.Query("pageSize"))
+
+	user, err := middlewares.CurrentUser(c)
 	if err != nil {
+		RespondError(c, http.StatusUnauthorized, err.Error())
 		return
 	}
 
-	// Convert the limit, page, and pageSize parameters to integers
-	// limit, _ := strconv.Atoi(limitStr)
-	page, _ := strconv.Atoi(pageStr)
-	pageSize, _ := strconv.Atoi(pageSizeStr)
-	users := api.Database.allUsersWithPagination(user.ID, searchQuery, page, pageSize)
-	c.JSON(http.StatusOK, users)
+	users := api.Database.AllUsersWithPagination(user.ID, searchQuery, page, pageSize)
+	if users == nil {
+		RespondError(c, http.StatusInternalServerError, "Failed to fetch users")
+		return
+	}
+	respondAsUsers(c, users)
 }
 
-// OauthRedirect handles the OAuth redirect flow. It generates the authorization URL for the
-// Google OAuth2 flow and returns it as a JSON response.
+// SelectedUsers godoc
+// @Summary  Get selected users
+// @Description  Returns the users matching the given ID list, excluding the requesting user.
+// @Tags  users
+// @Accept  json
+// @Produce  json
+// @Param  request  body  SelectUsersRequest  true  "User ID list"
+// @Success  200  {object}  ResponseUsers
+// @Failure  400  {object}  ErrorResponse
+// @Failure  500  {object}  ErrorResponse
+// @Router  /auth/user/select  [post]
+// @Security  BearerAuth
+func (api *Api) SelectedUsers(c *gin.Context) {
+	var request SelectUsersRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondError(c, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	user, err := middlewares.CurrentUser(c)
+	if err != nil {
+		RespondError(c, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	users, err := api.Database.GetUsersByIds(user.ID, request.UserIDs)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondAsUsers(c, users)
+}
+
+// OauthRedirect godoc
+// @Summary  Start Google OAuth flow
+// @Description  Returns the provider authorization URL for the social login flow.
+// @Tags  oauth
+// @Produce  json
+// @Success  200  {object}  ResponseRedirect
+// @Failure  500  {object}  ErrorResponse
+// @Router  /api/oauth/redirect  [get]
 func (api *Api) OauthRedirect(c *gin.Context) {
-	url := services.GoogleOAuthConfig.AuthCodeURL(services.OauthStateString)
-	//c.Redirect(http.StatusTemporaryRedirect, "")
-	c.JSON(http.StatusOK, gin.H{
-		"redirect": url,
+	RespondOK(c, RedirectData{
+		Redirect: api.OAuth.AuthCodeURL(api.OAuth.State()),
 	})
 }
 
-// OauthCallBack handles the OAuth callback flow. It exchanges the authorization code for an access token,
-// retrieves the user's Google profile information, creates or updates the user in the database, creates a
-// social auth client record, updates the user's profile fields, and generates a JWT token for the user.
-
+// OauthCallBack godoc
+// @Summary  Google OAuth callback
+// @Description  Exchanges the authorization code, links the social account to the user, seeds the profile and returns an access token.
+// @Tags  oauth
+// @Produce  json
+// @Param  code  query  string  true  "Authorization code"
+// @Param  state  query  string  true  "State returned by /api/oauth/redirect"
+// @Param  platform  query  string  false  "Target platform claim"
+// @Success  200  {object}  ResponseAuth
+// @Failure  400  {object}  ErrorResponse
+// @Router  /api/oauth/callback  [get]
 func (api *Api) OauthCallBack(c *gin.Context) {
 	code := c.Query("code")
 	platform := c.Query("platform")
+
 	if code == "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Missing authorization code"})
+		RespondError(c, http.StatusBadRequest, "Missing authorization code")
+		return
+	}
+	if api.OAuth.SessionState != "" && c.Query("state") != api.OAuth.SessionState {
+		RespondError(c, http.StatusBadRequest, "Invalid OAuth state")
 		return
 	}
 
-	token, err := services.GoogleOAuthConfig.Exchange(context.Background(), code)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	token, err := api.OAuth.Exchange(ctx, code)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to exchange authorization code for token"})
+		RespondError(c, http.StatusBadRequest, "Failed to exchange authorization code for token")
 		return
 	}
 
-	googleUserInfo, err := services.GetUserInfo(token)
+	googleUserInfo, err := api.OAuth.GetUserInfo(token)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user info"})
+		RespondError(c, http.StatusInternalServerError, "Failed to get user info")
 		return
 	}
 
-	// user
 	user, err := api.Database.OauthGetOrCreateUser(googleUserInfo.Email, googleUserInfo.GivenName)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": err.Error(),
-		})
+		RespondError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// social model
-	err = api.Database.CreateSocialAuthClient("google", user.ID, googleUserInfo.ID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": err.Error(),
-		})
+	if err := api.Database.CreateSocialAuthClient("google", user.ID, googleUserInfo.ID); err != nil {
+		RespondError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// update profile fields
 	profile := map[string]string{
-		"first_name":   googleUserInfo.GivenName,
-		"last_name":    googleUserInfo.FamilyName,
-		"display_name": googleUserInfo.Name,
-		//"avatar":       googleUserInfo.Picture,
-		"username": googleUserInfo.GivenName,
+		models.KeyFirstName:   googleUserInfo.GivenName,
+		models.KeyLastName:    googleUserInfo.FamilyName,
+		models.KeyDisplayName: googleUserInfo.Name,
+		models.KeyUsername:    googleUserInfo.GivenName,
 	}
-
 	for key, value := range profile {
-		err := api.Database.updateProfile(user.ID, key, value)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": err.Error(),
-			})
+		if value == "" {
+			continue
+		}
+		if err := api.Database.UpdateProfile(user.ID, key, value); err != nil {
+			RespondError(c, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 
-	// Create a new JWT token
-	secret := []byte(os.Getenv("SECRET"))
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"user_id":  user.ID,
-		"platform": platform,
-		"exp":      time.Now().Local().Add(time.Minute * time.Duration(10)).Unix(),
-		"nbf":      time.Now().Unix(),
-	})
-
-	// Sign and get the complete encoded JWT token as a string using the secret
-	jwtTokenString, err := jwtToken.SignedString(secret)
+	jwtToken, err := api.Tokens.Generate(user.ID, platform, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sign JWT token"})
+		RespondError(c, http.StatusInternalServerError, "Failed to sign JWT token")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"version": api.Config.Get("apiVersion"),
-		"step":    user.RegistrationStep,
-		"user_id": user.ID,
-		"token":   jwtTokenString,
+	RespondOK(c, AuthData{
+		UserID: user.ID,
+		Step:   user.RegistrationStep,
+		Token:  jwtToken,
 	})
+}
+
+// --- helpers ---
+
+const (
+	birthdateFormat       = "2006/01/02"
+	maxProfileValueLength = 1500
+)
+
+type invalidPayloadError struct {
+	message string
+}
+
+func (e invalidPayloadError) Error() string {
+	return e.message
+}
+
+// exitUser converts the database user into its public representation.
+func exitUser(user *models.User) models.User {
+	if user == nil {
+		return models.User{}
+	}
+	return *user
+}
+
+func respondAsUser(c *gin.Context, user *models.User) {
+	RespondOK(c, exitUser(user))
+}
+
+func respondAsUsers(c *gin.Context, users []models.User) {
+	if users == nil {
+		users = []models.User{}
+	}
+	RespondOK(c, users)
+}
+
+// validationErrorMessage keeps binding errors short and human readable.
+func validationErrorMessage(bindErr error, fallback string) string {
+	msg := bindErr.Error()
+	if strings.Contains(msg, "required") || strings.Contains(msg, "email") {
+		return fallback
+	}
+	return msg
+}
+
+func handleProfileUpdateError(c *gin.Context, err error) {
+	if payloadErr, ok := err.(invalidPayloadError); ok {
+		RespondError(c, http.StatusUnprocessableEntity, payloadErr.message)
+		return
+	}
+	RespondError(c, http.StatusInternalServerError, err.Error())
 }
